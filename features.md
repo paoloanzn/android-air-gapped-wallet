@@ -1,0 +1,21 @@
+| Category | Feature |
+|---|---|
+| Bluetooth | `android.hardware.bluetooth` |
+| Bluetooth | `android.hardware.bluetooth_le` |
+| NFC | `android.hardware.nfc` |
+| NFC | `android.hardware.nfc.any` |
+| NFC | `android.hardware.nfc.hce` |
+| NFC | `android.hardware.nfc.hcef` |
+| NFC | `android.hardware.nfc.uicc` |
+| Telephony | `android.hardware.telephony` |
+| Telephony | `android.hardware.telephony.calling` |
+| Telephony | `android.hardware.telephony.cdma` |
+| Telephony | `android.hardware.telephony.data` |
+| Telephony | `android.hardware.telephony.gsm` |
+| Telephony | `android.hardware.telephony.ims` |
+| Telephony | `android.hardware.telephony.messaging` |
+| Telephony | `android.hardware.telephony.radio.access` |
+| Telephony | `android.hardware.telephony.subscription` |
+| Wi-Fi | `android.hardware.wifi` |
+| Wi-Fi | `android.hardware.wifi.direct` |
+| Wi-Fi | `android.hardware.wifi.passpoint` |
