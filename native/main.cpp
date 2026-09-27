@@ -166,8 +166,8 @@ bool initGraphics(android_app* app)
 
     ImGuiStyle& style = ImGui::GetStyle();
 
-    style.ScaleAllSizes(3.0f);
-    style.FontScaleDpi = 3.0f;
+    style.ScaleAllSizes(4.0f);
+    style.FontScaleDpi = 4.0f;
 
     gInitialized = true;
 
@@ -226,14 +226,15 @@ void drawFrame()
     //
 
     ImGuiIO& io = ImGui::GetIO();
+    ImGuiStyle& style = ImGui::GetStyle();
 
     ImGui::SetNextWindowPos(
-        ImVec2(0, 0),
+        ImVec2(0, io.DisplaySize.y * 0.1),
         ImGuiCond_Always
     );
 
     ImGui::SetNextWindowSize(
-        io.DisplaySize,
+        ImVec2(io.DisplaySize.x, io.DisplaySize.y * 0.9),
         ImGuiCond_Always
     );
 
@@ -242,6 +243,9 @@ void drawFrame()
         ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse;
+
+    // Remove visible window border
+    style.WindowBorderSize = 0.0f;
 
     ImGui::Begin(
         "Airgap",
