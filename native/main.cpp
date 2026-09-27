@@ -166,8 +166,8 @@ bool initGraphics(android_app* app)
 
     ImGuiStyle& style = ImGui::GetStyle();
 
-    style.ScaleAllSizes(4.0f);
-    style.FontScaleDpi = 4.0f;
+    style.ScaleAllSizes(3.5f);
+    style.FontScaleDpi = 3.5f;
 
     gInitialized = true;
 
@@ -253,7 +253,7 @@ void drawFrame()
         flags
     );
 
-    ImGui::Text("AIRGAP");
+    ImGui::Text("airgap wallet");
 
     ImGui::Spacing();
     ImGui::Spacing();

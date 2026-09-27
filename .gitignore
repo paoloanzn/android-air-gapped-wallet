@@ -1,4 +1,6 @@
 build/
+.venv/
+__pycache__/
 *.jks
 .ndk
 keys/
