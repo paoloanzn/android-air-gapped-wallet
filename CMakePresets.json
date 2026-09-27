@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "android",
+      "displayName": "Android native library",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "environment": {
+        "ANDROID_NDK_HOME": "$env{NDK}"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{NDK}/build/cmake/android.toolchain.cmake",
+        "ANDROID_STL": "c++_static"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "android",
+      "configurePreset": "android"
+    }
+  ]
+}

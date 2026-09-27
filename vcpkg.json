@@ -1,0 +1,13 @@
+{
+  "name": "airgap",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": [
+        "android-binding",
+        "opengl3-binding"
+      ]
+    }
+  ]
+}

@@ -1,4 +1,7 @@
-# Builds .apk 
+#!/bin/sh
+set -eu
+
+# Builds .apk
 ANDROID_SDK_ROOT="$HOME/Library/Android/sdk"
 BUILD_TOOLS="$ANDROID_SDK_ROOT/build-tools/36.0.0"
 ANDROID_JAR="$ANDROID_SDK_ROOT/platforms/android-36/android.jar"
@@ -6,7 +9,8 @@ ANDROID_JAR="$ANDROID_SDK_ROOT/platforms/android-36/android.jar"
 ROOT="$(CDPATH= cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
 
 # Compile first
-sh "$ROOT/native/compile.sh"
+cmake --preset android -S "$ROOT" || exit 1
+cmake --build "$ROOT/build" || exit 1
 
 APK_OUT="$ROOT/build/airgap-base.apk"
 
