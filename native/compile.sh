@@ -1,3 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$ROOT"
+
 PREBUILT="$(find "$NDK/toolchains/llvm/prebuilt" \
     -mindepth 1 -maxdepth 1 -type d | head -1)"
 
@@ -38,13 +44,40 @@ fi
 
 CXX="$PREBUILT/bin/${TRIPLE}${API}-clang++"
 "$CXX" --version &> /dev/null
-echo "Compiler=$CXX"
+echo "Compiler++=$CXX"
 
-mkdir -p build/
+CC="$PREBUILT/bin/${TRIPLE}${API}-clang"
+"$CC" --version &> /dev/null
+echo "Compiler=$CC"
+
+GLUE="$NDK/sources/android/native_app_glue"
+echo "Glue=$GLUE"
+
+mkdir -p build/obj
+
+"$CC" \
+    -MJ "$ROOT/build/obj/android_native_app_glue.json" \
+    -O2 \
+    -fPIC \
+    -I"$GLUE" \
+    -c "$GLUE/android_native_app_glue.c" \
+    -o "$ROOT/build/obj/android_native_app_glue.o"
 
 "$CXX" \
--O2 \
--fPIE \
--pie \
-$(cd -P -- "$(dirname -- "$0")" && pwd -P)/main.cpp \
--o build/main
+    -MJ "$ROOT/build/obj/main.json" \
+    -std=c++20 \
+    -O2 \
+    -fPIC \
+    -I"$GLUE" \
+    -c "$ROOT/native/main.cpp" \
+    -o "$ROOT/build/obj/main.o"
+
+sh "$ROOT/native/generate-compile-commands.sh"
+
+"$CXX" \
+    -shared \
+    "$ROOT/build/obj/main.o" \
+    "$ROOT/build/obj/android_native_app_glue.o" \
+    -landroid \
+    -llog \
+    -o "$ROOT/build/libairgap.so"
