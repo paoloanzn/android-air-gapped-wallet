@@ -76,6 +76,7 @@ sh "$ROOT/native/generate-compile-commands.sh"
 
 "$CXX" \
     -shared \
+    -static-libstdc++ \
     "$ROOT/build/obj/main.o" \
     "$ROOT/build/obj/android_native_app_glue.o" \
     -landroid \
