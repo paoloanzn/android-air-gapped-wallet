@@ -1,0 +1,1 @@
+Turning a brand new out-of-the-box [Redmi Note 17](https://www.mi.com/global/product/redmi-note-17/specs/) into a semi-airgapped crypto cold wallet device.
