@@ -50,6 +50,7 @@ project(airgap LANGUAGES C CXX)
 set(glue "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
 add_library(airgap SHARED
     native/main.cpp
+    native/bip39_words.cpp
     native/ui.cpp
     native/camera.cpp
     native/crypto/abi.c

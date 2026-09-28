@@ -22,16 +22,20 @@ APK_OUT="$ROOT/build/airgap-base.apk"
 echo "Created $APK_OUT"
 
 mkdir -p "$ROOT/build/apk/lib/arm64-v8a"
+mkdir -p "$ROOT/build/apk/assets"
 
 cp "$ROOT/build/libairgap.so" \
    "$ROOT/build/apk/lib/arm64-v8a/libairgap.so"
+cp "$ROOT/app/assets/bip39_english.csv" \
+   "$ROOT/build/apk/assets/bip39_english.csv"
 
 cp "$ROOT/build/airgap-base.apk" "$ROOT/build/airgap-unaligned.apk"
 
 cd "$ROOT/build/apk"
 
 zip -0 ../airgap-unaligned.apk \
-    lib/arm64-v8a/libairgap.so
+    lib/arm64-v8a/libairgap.so \
+    assets/bip39_english.csv
 
 cd "$ROOT"
 
