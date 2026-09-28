@@ -48,12 +48,25 @@ endif()
 project(airgap LANGUAGES C CXX)
 
 set(glue "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
-add_library(airgap SHARED native/main.cpp native/ui.cpp native/camera.cpp "${glue}/android_native_app_glue.c")
-target_include_directories(airgap PRIVATE "${glue}")
+add_library(airgap SHARED
+    native/main.cpp
+    native/ui.cpp
+    native/camera.cpp
+    native/crypto/abi.c
+    native/crypto/eip_1559_tx.c
+    native/crypto/eth_crypto.c
+    native/crypto/rlp.c
+    native/crypto/selector.c
+    "${glue}/android_native_app_glue.c"
+)
+target_include_directories(airgap PRIVATE "${glue}" native/crypto)
 set_target_properties(airgap PROPERTIES
     CXX_STANDARD 20
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO
+    C_STANDARD 11
+    C_STANDARD_REQUIRED YES
+    C_EXTENSIONS NO
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 target_compile_options(airgap PRIVATE -O2)
