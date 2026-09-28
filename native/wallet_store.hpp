@@ -45,7 +45,7 @@ public:
     // Names and addresses are public metadata, authenticated on load().
     std::vector<WalletInfo> list() const;
 
-    // save() and load() require a working StrongBox-backed Android Keystore.
+    // save() and load() require Android 12+ and a TEE-backed Keystore key.
     bool save(std::string_view name, const Wallet& wallet);
     std::optional<Wallet> load(std::string_view name) const;
     bool erase(std::string_view name);

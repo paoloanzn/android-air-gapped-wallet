@@ -222,7 +222,9 @@ void createStoredWallet() {
         gPendingAddress = wallet->address();
         gPendingAddressHex = wallet->addressHexEncoded();
         if (!gWalletStore->save(gPendingAddressHex, *wallet)) {
-            gCreateMessage = "Wallet was not saved. StrongBox or storage may be unavailable.";
+            gCreateMessage =
+                "Wallet was not saved. TEE-backed Keystore or "
+                "storage may be unavailable.";
             clearRecoveryWords();
 
             return;
@@ -464,7 +466,7 @@ void drawCreateWalletMenu() {
     }
 
     ImGui::TextWrapped(
-        "Create a wallet, save its key in StrongBox, then write down "
+        "Create a wallet, protect its key with the TEE, then write down "
         "the 24 recovery words shown on the next screen.");
 
     if (ImGui::Button("CREATE AND SAVE WALLET", ImVec2(-1, 150)))

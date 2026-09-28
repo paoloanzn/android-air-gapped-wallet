@@ -29,7 +29,7 @@ constexpr char kKeyAlias[] = "airgap.wallet-store.v1";
 
 constexpr int kEncryptMode = 1;
 constexpr int kDecryptMode = 2;
-constexpr int kStrongBoxSecurityLevel = 2;
+constexpr int kTeeSecurityLevel = 1;
 
 class JniScope {
 public:
@@ -234,7 +234,7 @@ std::vector<uint8_t> associatedData(const StoredKey& entry) {
     return data;
 }
 
-jobject generateStrongBoxKey(JniScope& jni) {
+jobject generateKeystoreKey(JniScope& jni) {
     auto alias = jni.string(kKeyAlias);
     auto algorithm = jni.string("AES");
     auto provider = jni.string("AndroidKeyStore");
@@ -273,11 +273,6 @@ jobject generateStrongBoxKey(JniScope& jni) {
                     256))
         return nullptr;
 
-    if (!jni.object(builder, "setIsStrongBoxBacked",
-                    "(Z)Landroid/security/keystore/KeyGenParameterSpec$Builder;",
-                    JNI_TRUE))
-        return nullptr;
-
     auto spec = jni.object(builder, "build",
                            "()Landroid/security/keystore/KeyGenParameterSpec;");
     auto generator = jni.staticObject(
@@ -296,10 +291,7 @@ jobject generateStrongBoxKey(JniScope& jni) {
                       "()Ljavax/crypto/SecretKey;");
 }
 
-bool isStrongBoxKey(JniScope& jni, jobject key) {
-    if (android_get_device_api_level() < 31)
-        return true;
-
+bool isTeeKey(JniScope& jni, jobject key) {
     auto algorithm = jni.string("AES");
     auto provider = jni.string("AndroidKeyStore");
     auto infoClass = jni.find("android/security/keystore/KeyInfo");
@@ -317,12 +309,15 @@ bool isStrongBoxKey(JniScope& jni, jobject key) {
         factory, "getKeySpec",
         "(Ljavax/crypto/SecretKey;Ljava/lang/Class;)Ljava/security/spec/KeySpec;",
         key, infoClass);
-    return info && jni.integer(info, "getSecurityLevel", "()I") ==
-                       kStrongBoxSecurityLevel;
+    if (!info)
+        return false;
+
+    return jni.integer(info, "getSecurityLevel", "()I") ==
+           kTeeSecurityLevel;
 }
 
 jobject secretKey(JniScope& jni, bool create) {
-    if (android_get_device_api_level() < 28)
+    if (android_get_device_api_level() < 31)
         return nullptr;
 
     auto provider = jni.string("AndroidKeyStore");
@@ -343,10 +338,21 @@ jobject secretKey(JniScope& jni, bool create) {
     if (!jni.ready())
         return nullptr;
 
-    if (!key && create)
-        key = generateStrongBoxKey(jni);
+    if (key)
+        return isTeeKey(jni, key) ? key : nullptr;
 
-    return key && isStrongBoxKey(jni, key) ? key : nullptr;
+    if (!create)
+        return nullptr;
+
+    key = generateKeystoreKey(jni);
+    if (!key)
+        return nullptr;
+
+    if (isTeeKey(jni, key))
+        return key;
+
+    jni.call(store, "deleteEntry", "(Ljava/lang/String;)V", alias);
+    return nullptr;
 }
 
 jobject newCipher(JniScope& jni) {
