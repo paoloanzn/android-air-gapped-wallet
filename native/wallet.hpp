@@ -28,6 +28,7 @@ public:
 
     // Restores a wallet from a 32-byte secp256k1 private key.
     static std::optional<Wallet> load(const PrivateKey& privateKey);
+    static std::optional<Wallet> load(PrivateKey&& privateKey);
 
     Wallet(const Wallet&) = delete;
     Wallet& operator=(const Wallet&) = delete;
@@ -45,6 +46,7 @@ public:
 
 private:
     Wallet() = default;
+    friend class WalletStore;
 
     PrivateKey privateKey_{};
     PublicKey publicKey_{};

@@ -53,6 +53,7 @@ add_library(airgap SHARED
     native/bip39_words.cpp
     native/hex.cpp
     native/wallet.cpp
+    native/wallet_store.cpp
     native/ui.cpp
     native/camera.cpp
     native/crypto/abi.c

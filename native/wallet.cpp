@@ -69,6 +69,12 @@ std::optional<Wallet> Wallet::load(const PrivateKey& privateKey) {
     return wallet;
 }
 
+std::optional<Wallet> Wallet::load(PrivateKey&& privateKey) {
+    auto wallet = load(static_cast<const PrivateKey&>(privateKey));
+    OPENSSL_cleanse(privateKey.data(), privateKey.size());
+    return wallet;
+}
+
 Wallet::Wallet(Wallet&& other) noexcept : Wallet() {
     *this = std::move(other);
 }
