@@ -4,9 +4,11 @@
 
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
+#include <openssl/crypto.h>
 #include <algorithm>
 
 #include "camera.hpp"
+#include "wallet.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_android.h"
@@ -32,6 +34,12 @@ bool gResumed = false;
 std::optional<Camera> gCamera;
 bool gCameraPermissionPending = false;
 std::string gCameraMessage;
+
+Wallet::RecoveryWords gRecoveryWords{};
+std::string gWalletAddress;
+std::string gWalletMessage;
+bool gWalletVisible = false;
+
 GLuint gCameraTexture = 0;
 int gPreviewWidth = 0, gPreviewHeight = 0, gSensorOrientation = 0;
 int gDisplayRotation = 0;
@@ -140,6 +148,27 @@ void closeCamera() {
         glDeleteTextures(1, &gCameraTexture);
     gCameraTexture = 0;
     gPreviewWidth = gPreviewHeight = 0;
+}
+
+void clearTestWallet() {
+    OPENSSL_cleanse(gRecoveryWords.data(), sizeof(gRecoveryWords));
+    gWalletAddress.clear();
+    gWalletVisible = false;
+}
+
+void generateTestWallet() {
+    clearTestWallet();
+    gWalletMessage.clear();
+
+    auto wallet = Wallet::create(gApp->activity->assetManager, gRecoveryWords);
+    if (!wallet) {
+        gWalletMessage = "Wallet generation failed. Check the BIP-39 asset.";
+
+        return;
+    }
+
+    gWalletAddress = wallet->addressHexEncoded();
+    gWalletVisible = true;
 }
 
 void openCamera() {
@@ -319,6 +348,7 @@ bool initGraphics(android_app* app) {
 
 void shutdownGraphics() {
     closeCamera();
+    clearTestWallet();
     if (!gInitialized)
         return;
 
@@ -377,12 +407,38 @@ void drawFrame() {
 
     ImGui::Begin("Airgap", nullptr, flags);
 
-    ImGui::Text("airgap wallet");
-
+    ImGui::Text("Wallet");
     ImGui::Spacing();
     ImGui::Spacing();
 
-    ImGui::Text("Ethereum cold wallet");
+    if (ImGui::Button("GENERATE TEST WALLET", ImVec2(-1, 120)))
+        generateTestWallet();
+
+    if (!gWalletMessage.empty())
+        ImGui::TextWrapped("%s", gWalletMessage.c_str());
+
+    if (gWalletVisible && ImGui::Button("DISCARD TEST WALLET", ImVec2(-1, 90)))
+        clearTestWallet();
+
+    if (gWalletVisible) {
+        ImGui::TextUnformatted("Address:");
+        ImGui::TextWrapped("%s", gWalletAddress.c_str());
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Recovery words:");
+
+        if (ImGui::BeginTable("recovery words", 2)) {
+            for (size_t i = 0; i < 12; ++i) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%2zu. %s", i + 1, gRecoveryWords[i].data());
+
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%2zu. %s", i + 13, gRecoveryWords[i + 12].data());
+            }
+
+            ImGui::EndTable();
+        }
+    }
 
     ImGui::Spacing();
 
@@ -439,6 +495,7 @@ void handleCommand(android_app* app, int32_t command) {
 
     case APP_CMD_PAUSE:
         gResumed = false;
+        clearTestWallet();
         // Preserve a pending permission request while its dialog is visible.
         if (gCamera)
             gCamera->close();
@@ -451,6 +508,7 @@ void handleCommand(android_app* app, int32_t command) {
 
     case APP_CMD_STOP:
         closeCamera();
+        clearTestWallet();
         break;
 
     case APP_CMD_CONFIG_CHANGED:
