@@ -8,6 +8,8 @@
         "android-binding",
         "opengl3-binding"
       ]
-    }
+    },
+    "secp256k1",
+    "openssl"
   ]
 }

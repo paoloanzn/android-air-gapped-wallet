@@ -66,3 +66,22 @@ if(NOT TARGET imgui::imgui)
 endif()
 target_link_libraries(airgap PRIVATE imgui::imgui)
 # END vcpkg-install: imgui
+
+# BEGIN vcpkg-install: secp256k1
+find_package(libsecp256k1 REQUIRED)
+if(NOT TARGET libsecp256k1::secp256k1)
+    message(FATAL_ERROR "libsecp256k1 did not define target libsecp256k1::secp256k1")
+endif()
+target_link_libraries(airgap PRIVATE libsecp256k1::secp256k1)
+# END vcpkg-install: secp256k1
+
+# BEGIN vcpkg-install: openssl
+find_package(OpenSSL REQUIRED)
+if(NOT TARGET OpenSSL::Crypto)
+    message(FATAL_ERROR "OpenSSL did not define target OpenSSL::Crypto")
+endif()
+if(NOT TARGET OpenSSL::SSL)
+    message(FATAL_ERROR "OpenSSL did not define target OpenSSL::SSL")
+endif()
+target_link_libraries(airgap PRIVATE OpenSSL::Crypto OpenSSL::SSL)
+# END vcpkg-install: openssl
