@@ -48,7 +48,7 @@ endif()
 project(airgap LANGUAGES C CXX)
 
 set(glue "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
-add_library(airgap SHARED native/main.cpp native/camera.cpp "${glue}/android_native_app_glue.c")
+add_library(airgap SHARED native/main.cpp native/ui.cpp native/camera.cpp "${glue}/android_native_app_glue.c")
 target_include_directories(airgap PRIVATE "${glue}")
 set_target_properties(airgap PROPERTIES
     CXX_STANDARD 20
