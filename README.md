@@ -48,7 +48,7 @@ you want and select the active one.
 > [!IMPORTANT]
 > Write the mnemonic on paper if you want to save them, and **not** on another device, otherwise the
 > whole point of a cold wallet is gone, because it would be like duplicating the key on an hot
-> device. I would advise you to even considering using this app if you didn't figure this
+> device. I would advise you to avoid even considering using this app if you didn't figure this
 > out yourself. 
 
 
