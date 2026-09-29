@@ -4,3 +4,4 @@ __pycache__/
 *.jks
 .ndk
 keys/
+test-data/qr-codes/

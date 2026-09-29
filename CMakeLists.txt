@@ -59,6 +59,8 @@ add_library(airgap SHARED
     native/wallet_store.cpp
     native/ui.cpp
     native/camera.cpp
+    native/qr_scanner.cpp
+    native/qr_scan_worker.cpp
     native/crypto/abi.c
     native/crypto/eip_1559_tx.c
     native/crypto/eth_crypto.c
@@ -105,3 +107,11 @@ if(NOT TARGET OpenSSL::SSL)
 endif()
 target_link_libraries(airgap PRIVATE OpenSSL::Crypto OpenSSL::SSL)
 # END vcpkg-install: openssl
+
+# BEGIN vcpkg-install: quirc
+find_package(quirc REQUIRED)
+if(NOT TARGET quirc::quirc)
+    message(FATAL_ERROR "quirc did not define target quirc::quirc")
+endif()
+target_link_libraries(airgap PRIVATE quirc::quirc)
+# END vcpkg-install: quirc

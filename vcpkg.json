@@ -9,7 +9,8 @@
         "opengl3-binding"
       ]
     },
+    "openssl",
     "secp256k1",
-    "openssl"
+    "quirc"
   ]
 }

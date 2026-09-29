@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <array>
+#include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -17,6 +19,8 @@
 #include "call_definitions.hpp"
 #include "call_definitions_storage.hpp"
 #include "hex.hpp"
+#include "qr_scan_worker.hpp"
+
 #include "wallet.hpp"
 #include "wallet_store.hpp"
 #include "types.hpp"
@@ -46,6 +50,9 @@ bool gResumed = false;
 std::optional<Camera> gCamera;
 bool gCameraPermissionPending = false;
 std::string gCameraMessage;
+
+std::unique_ptr<QrScanWorker> gQrWorker;
+std::optional<QrScanWorker::Result> gScanResult;
 
 std::optional<WalletStore> gWalletStore;
 std::optional<eth::Address> gActiveAddress;
@@ -275,6 +282,7 @@ void addTextInput(AInputEvent* event) {
 
 void closeCamera() {
     gCameraPermissionPending = false;
+    gQrWorker.reset();
 
     if (gCamera)
         gCamera->close();
@@ -344,15 +352,69 @@ void selectStoredWallet(const WalletStore::WalletInfo& info) {
         return;
     }
 
+    closeCamera();
+    gScanResult.reset();
     gActiveAddress = wallet->address();
 }
 
 void openCamera() {
     gCameraPermissionPending = false;
-    if (gCamera && gCamera->open())
-        gCameraMessage.clear();
-    else
+    gScanResult.reset();
+
+    if (!gCamera || !gCamera->open()) {
+        gQrWorker.reset();
         gCameraMessage = gCamera ? gCamera->lastError() : "Camera manager unavailable";
+        return;
+    }
+
+    try {
+        if (!gQrWorker)
+            gQrWorker = std::make_unique<QrScanWorker>();
+        gCameraMessage = "Point the camera at a transaction QR code.";
+
+    } catch (const std::exception&) {
+        closeCamera();
+        gCameraMessage = "Could not start QR scanning. Please try again.";
+    }
+}
+
+void collectScanResult() {
+    if (!gQrWorker)
+        return;
+
+    auto completion = gQrWorker->takeResult();
+    if (!completion)
+        return;
+
+    if (!completion->error.empty()) {
+        gCameraMessage = std::move(completion->error);
+        closeCamera();
+        return;
+    }
+
+    if (completion->result) {
+        gScanResult = std::move(completion->result);
+        gCameraMessage.clear();
+        closeCamera();
+    }
+}
+
+void drawScanResult() {
+    if (!gScanResult)
+        return;
+
+    ImGui::Separator();
+    if (gScanResult->transaction) {
+        const auto* definitions = gCallDefinitions ? &*gCallDefinitions : nullptr;
+        const auto description = gScanResult->transaction->describe(definitions);
+        ImGui::TextWrapped("%s", description.c_str());
+
+    } else {
+        std::array<char, 67> text{};
+        hex_encode(gScanResult->hash.data(), gScanResult->hash.size(), text.data());
+        ImGui::TextWrapped("Scanned hash: %s", text.data());
+        ImGui::TextWrapped("This QR contains only a hash; transaction details are unavailable.");
+    }
 }
 
 // Move this call anywhere in the ImGui layout; Camera owns no UI/GL resources.
@@ -360,8 +422,11 @@ void drawCameraPreview() {
     if (!gCamera || !gResumed)
         return;
 
-    if (gCameraPermissionPending && cameraPermission(false))
+    if (gCameraPermissionPending) {
+        if (!cameraPermission(false))
+            return;
         openCamera();
+    }
 
     if (auto frame = gCamera->readFrame()) {
         if (!gCameraTexture) {
@@ -388,14 +453,16 @@ void drawCameraPreview() {
         gPreviewWidth = frame->width;
         gPreviewHeight = frame->height;
         gSensorOrientation = frame->sensorOrientation;
+
+        if (gQrWorker)
+            gQrWorker->submit(std::move(frame->rgba), frame->width, frame->height);
     }
 
     if (!gCamera->isOpen()) {
         if (!gCamera->lastError().empty())
             gCameraMessage = gCamera->lastError();
 
-        if (gCameraTexture)
-            closeCamera();
+        closeCamera();
 
         return;
     }
@@ -410,7 +477,8 @@ void drawCameraPreview() {
     const float width = (turns % 2) ? gPreviewHeight : gPreviewWidth;
     const float height = (turns % 2) ? gPreviewWidth : gPreviewHeight;
     const auto available = ImGui::GetContentRegionAvail();
-    const float scale = std::min(available.x / width, available.y / height);
+    const float previewHeight = std::min(available.y, ImGui::GetWindowHeight() * 0.4f);
+    const float scale = std::min(available.x / width, previewHeight / height);
 
     if (scale <= 0)
         return;
@@ -484,6 +552,8 @@ void drawCameraControls() {
         return;
     }
 
+    collectScanResult();
+
     const char* label = gCamera && gCamera->isOpen() ?
                         "CLOSE CAMERA" : "SCAN TX";
     if (ImGui::Button(label, ImVec2(-1, 180))) {
@@ -501,9 +571,11 @@ void drawCameraControls() {
         }
     }
 
-    drawCameraPreview();
     if (!gCameraMessage.empty())
         ImGui::TextWrapped("%s", gCameraMessage.c_str());
+
+    drawScanResult();
+    drawCameraPreview();
 }
 
 void drawSelectWalletMenu() {
@@ -531,7 +603,9 @@ void drawSelectWalletMenu() {
         return;
     }
 
-    if (ImGui::BeginChild("saved wallets", ImVec2(0, 600),
+    const float listHeight = std::min(600.0f, ImGui::GetWindowHeight() * 0.3f);
+
+    if (ImGui::BeginChild("saved wallets", ImVec2(0, listHeight),
                           ImGuiChildFlags_Borders)) {
         for (size_t i = 0; i < wallets.size(); ++i) {
             const auto& info = wallets[i];
@@ -655,6 +729,9 @@ void restoreCallDefinitions() {
 }
 
 void drawCallDefinitionsMenu() {
+    if (gCameraPermissionPending || gQrWorker || (gCamera && gCamera->isOpen()))
+        closeCamera();
+
     ImGui::TextWrapped(
         "The APK provides calls.txt. SAVE keeps a private editable copy. "
         "Write one function per line. Supported types: address, "
@@ -952,20 +1029,16 @@ void handleCommand(android_app* app, int32_t command) {
         gResumed = true;
         break;
 
-    case APP_CMD_PAUSE:
+    case APP_CMD_PAUSE: {
         gResumed = false;
 
         // Preserve a pending permission request while its dialog is visible.
-        if (gCamera)
-            gCamera->close();
-
-        if (gCameraTexture) {
-            const bool pending = gCameraPermissionPending;
-            closeCamera();
-            gCameraPermissionPending = pending;
-        }
+        const bool pending = gCameraPermissionPending;
+        closeCamera();
+        gCameraPermissionPending = pending;
 
         break;
+    }
 
     case APP_CMD_STOP:
         closeCamera();
@@ -1012,6 +1085,8 @@ void initialize(android_app* app) {
 }
 
 void shutdown() {
+    closeCamera();
+    gScanResult.reset();
     shutdownGraphics();
     clearRecoveryWords();
     gActiveAddress.reset();
