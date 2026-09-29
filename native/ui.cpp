@@ -57,7 +57,7 @@ std::string gSelectMessage;
 std::optional<CallDefinitions> gCallDefinitions;
 std::string gCallDraft;
 std::string gCallMessage;
-bool gKeyboardVisible = false;
+bool gKeyboardRequested = false;
 
 enum class BackupStage { None, FirstWarning, FinalWarning };
 BackupStage gBackupStage = BackupStage::None;
@@ -104,6 +104,65 @@ struct ActivityJni {
             vm->DetachCurrentThread();
     }
 };
+
+bool showSoftKeyboard() {
+    ActivityJni jni(gApp->activity);
+    if (!jni.localFrame)
+        return false;
+
+    auto* env = jni.env;
+    auto activity = gApp->activity->clazz;
+    auto activityClass = env->GetObjectClass(activity);
+    auto getCurrentFocus = env->GetMethodID(activityClass, "getCurrentFocus",
+                                             "()Landroid/view/View;");
+    if (!getCurrentFocus)
+        return false;
+
+    auto focusedView = env->CallObjectMethod(activity, getCurrentFocus);
+    if (env->ExceptionCheck())
+        return false;
+
+    auto getWindow = env->GetMethodID(activityClass, "getWindow", "()Landroid/view/Window;");
+    if (!getWindow)
+        return false;
+
+    auto window = env->CallObjectMethod(activity, getWindow);
+    if (env->ExceptionCheck() || !window)
+        return false;
+
+    auto windowClass = env->GetObjectClass(window);
+    auto getDecorView = env->GetMethodID(windowClass, "getDecorView", "()Landroid/view/View;");
+    if (!getDecorView)
+        return false;
+
+    auto decorView = env->CallObjectMethod(window, getDecorView);
+    if (env->ExceptionCheck() || !decorView)
+        return false;
+
+    auto inputView = focusedView ? focusedView : decorView;
+
+    auto inputMethodClass = env->FindClass("android/view/inputmethod/InputMethodManager");
+    if (!inputMethodClass)
+        return false;
+
+    auto getSystemService = env->GetMethodID(
+        activityClass, "getSystemService", "(Ljava/lang/Class;)Ljava/lang/Object;");
+    if (!getSystemService)
+        return false;
+
+    auto inputMethod = env->CallObjectMethod(activity, getSystemService, inputMethodClass);
+    if (env->ExceptionCheck() || !inputMethod)
+        return false;
+
+    auto showSoftInput = env->GetMethodID(inputMethodClass, "showSoftInput",
+                                           "(Landroid/view/View;I)Z");
+    if (!showSoftInput)
+        return false;
+
+    const jboolean requested = env->CallBooleanMethod(inputMethod, showSoftInput,
+                                                       inputView, 0);
+    return !env->ExceptionCheck() && requested;
+}
 
 bool cameraPermission(bool request) {
     ActivityJni jni(gApp->activity);
@@ -745,9 +804,9 @@ void shutdownGraphics() {
     if (!gInitialized)
         return;
 
-    if (gKeyboardVisible)
+    if (gKeyboardRequested)
         ANativeActivity_hideSoftInput(gApp->activity, 0);
-    gKeyboardVisible = false;
+    gKeyboardRequested = false;
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplAndroid_Shutdown();
@@ -777,6 +836,8 @@ void shutdownGraphics() {
 } // namespace
 
 void drawFrame() {
+    // [SECTION_START] Frame setup
+
     if (!gInitialized)
         return;
 
@@ -785,12 +846,12 @@ void drawFrame() {
 
     ImGui::NewFrame();
 
-    //
-    // UI starts here.
-    //
-
     ImGuiIO& io = ImGui::GetIO();
     ImGuiStyle& style = ImGui::GetStyle();
+
+    // [SECTION_END] Frame setup
+
+    // [SECTION_START] Window setup
 
     ImGui::SetNextWindowPos(ImVec2(0, io.DisplaySize.y * 0.1), ImGuiCond_Always);
 
@@ -804,8 +865,16 @@ void drawFrame() {
 
     ImGui::Begin("Airgap", nullptr, flags);
 
+    // [SECTION_END] Window setup
+
+    // [SECTION_START] Title
+
     ImGui::Text("Wallet");
     ImGui::Spacing();
+
+    // [SECTION_END] Title
+
+    // [SECTION_START] Wallet content
 
     if (gBackupStage != BackupStage::None) {
         drawBackupScreen();
@@ -833,23 +902,28 @@ void drawFrame() {
         ImGui::EndTabBar();
     }
 
+    // [SECTION_END] Wallet content
+
+    // [SECTION_START] UI rendering
+
     ImGui::End();
-
-    //
-    // Render
-    //
-
     ImGui::Render();
 
-    const bool wantsKeyboard = io.WantTextInput;
-    if (wantsKeyboard != gKeyboardVisible) {
-        if (wantsKeyboard)
-            ANativeActivity_showSoftInput(gApp->activity, 0);
-        else
-            ANativeActivity_hideSoftInput(gApp->activity, 0);
+    // [SECTION_END] UI rendering
 
-        gKeyboardVisible = wantsKeyboard;
+    // [SECTION_START] Keyboard visibility
+
+    const bool wantsKeyboard = io.WantTextInput;
+    if (wantsKeyboard && !gKeyboardRequested) {
+        gKeyboardRequested = showSoftKeyboard();
+    } else if (!wantsKeyboard && gKeyboardRequested) {
+        ANativeActivity_hideSoftInput(gApp->activity, 0);
+        gKeyboardRequested = false;
     }
+
+    // [SECTION_END] Keyboard visibility
+
+    // [SECTION_START] Frame presentation
 
     glViewport(0, 0, static_cast<int>(io.DisplaySize.x), static_cast<int>(io.DisplaySize.y));
 
@@ -860,6 +934,8 @@ void drawFrame() {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     eglSwapBuffers(gDisplay, gSurface);
+
+    // [SECTION_END] Frame presentation
 }
 
 void handleCommand(android_app* app, int32_t command) {
@@ -928,7 +1004,7 @@ void initialize(android_app* app) {
     gCreateMessage.clear();
     gSelectMessage.clear();
     gSelectWalletTab = false;
-    gKeyboardVisible = false;
+    gKeyboardRequested = false;
 
     gCamera = Camera::init();
     if (!gCamera)
