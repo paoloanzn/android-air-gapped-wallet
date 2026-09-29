@@ -1,3 +1,24 @@
+// Airgap wallet UI: one full-screen Dear ImGui window driven by android_native_app_glue.
+
+// Index of this file:
+// [SECTION] Includes, macros
+// [SECTION] Types, constants
+// [SECTION] State
+// [SECTION] Android helpers (JNI)
+// [SECTION] Formatting helpers
+// [SECTION] Widgets
+// [SECTION] Camera, QR scanning
+// [SECTION] Wallets
+// [SECTION] Transactions
+// [SECTION] Known calls
+// [SECTION] Home screen, navigation
+// [SECTION] Graphics lifecycle
+// [SECTION] Public API
+
+//-----------------------------------------------------------------------------
+// [SECTION] Includes, macros
+//-----------------------------------------------------------------------------
+
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/window.h>
@@ -8,22 +29,26 @@
 #include <openssl/crypto.h>
 
 #include <algorithm>
-#include <array>
+#include <cstdint>
 #include <exception>
 #include <memory>
-#include <optional>
-#include <string>
 #include <utility>
 
-#include "camera.hpp"
+#include <array>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
 #include "call_definitions.hpp"
 #include "call_definitions_storage.hpp"
+#include "camera.hpp"
 #include "hex.hpp"
 #include "qr_scan_worker.hpp"
 
+#include "types.hpp"
 #include "wallet.hpp"
 #include "wallet_store.hpp"
-#include "types.hpp"
 
 #include "imgui.h"
 #include "imgui_stdlib.h"
@@ -31,49 +56,113 @@
 #include "imgui_impl_opengl3.h"
 
 #define LOG_TAG "Airgap"
-
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace ui {
 namespace {
 
+//-----------------------------------------------------------------------------
+// [SECTION] Types, constants
+//-----------------------------------------------------------------------------
+
+enum class Screen { Home, Wallets, CreateWallet, Backup, Scan, Review, Signature, KnownCalls };
+enum class BackupStage { FirstWarning, FinalWarning };
+enum class ButtonStyle { Normal, Primary, Danger };
+
+struct Chain {
+    uint64_t id;
+    const char* name;
+    const char* symbol;
+};
+
+constexpr Chain kChains[] = {
+    {1, "Ethereum", "ETH"},
+    {10, "OP Mainnet", "ETH"},
+    {56, "BNB Smart Chain", "BNB"},
+    {137, "Polygon", "POL"},
+    {8453, "Base", "ETH"},
+    {42161, "Arbitrum One", "ETH"},
+
+    {43114, "Avalanche C-Chain", "AVAX"},
+
+    // Testnets
+    {17000, "Holesky testnet", "ETH"},
+    {11155111, "Sepolia testnet", "ETH"},
+};
+
+// One declaration in the known calls text, by its line index in that text.
+struct KnownCall {
+    size_t line;
+    std::string_view text;
+};
+
+// Sizes are in pixels after the 3.5x phone scale.
+constexpr float kButtonHeight = 140.0f;
+constexpr float kRowButtonHeight = 100.0f;
+constexpr float kUiScale = 3.5f;
+
+constexpr ImVec4 kPrimaryColors[] = {{0.16f, 0.45f, 0.86f, 1.0f},
+                                     {0.22f, 0.52f, 0.93f, 1.0f},
+                                     {0.12f, 0.38f, 0.76f, 1.0f}};
+
+constexpr ImVec4 kDangerColors[] = {{0.68f, 0.21f, 0.21f, 1.0f},
+                                    {0.78f, 0.27f, 0.27f, 1.0f},
+                                    {0.58f, 0.16f, 0.16f, 1.0f}};
+
+constexpr ImVec4 kNoticeColor = {0.95f, 0.80f, 0.35f, 1.0f};
+constexpr ImVec4 kWarningColor = {1.00f, 0.60f, 0.30f, 1.0f};
+
+//-----------------------------------------------------------------------------
+// [SECTION] State
+//-----------------------------------------------------------------------------
+
+// Graphics, platform
 EGLDisplay gDisplay = EGL_NO_DISPLAY;
 EGLSurface gSurface = EGL_NO_SURFACE;
 EGLContext gContext = EGL_NO_CONTEXT;
 
 android_app* gApp = nullptr;
-
 bool gInitialized = false;
 bool gResumed = false;
-std::optional<Camera> gCamera;
-bool gCameraPermissionPending = false;
-std::string gCameraMessage;
-
-std::unique_ptr<QrScanWorker> gQrWorker;
-std::optional<QrScanWorker::Result> gScanResult;
-
-std::optional<WalletStore> gWalletStore;
-std::optional<eth::Address> gActiveAddress;
-std::optional<eth::Address> gPendingAddress;
-Wallet::RecoveryWords gRecoveryWords{};
-std::string gPendingAddressHex;
-std::string gCreateMessage;
-std::string gSelectMessage;
-std::optional<CallDefinitions> gCallDefinitions;
-std::string gCallDraft;
-std::string gCallMessage;
 bool gKeyboardRequested = false;
 
-enum class BackupStage { None, FirstWarning, FinalWarning };
-BackupStage gBackupStage = BackupStage::None;
-bool gBackupReviewed = false;
-bool gSelectWalletTab = false;
+// Navigation; screen changes are applied at the start of the next frame.
+Screen gScreen = Screen::Home;
+std::optional<Screen> gNextScreen;
+std::string gNextMessage;
+std::string gMessage;
+ImGuiID gArmedButton = 0;
 
+// Camera, QR scanning
+std::optional<Camera> gCamera;
+std::unique_ptr<QrScanWorker> gQrWorker;
+bool gCameraPermissionPending = false;
 GLuint gCameraTexture = 0;
 int gPreviewWidth = 0, gPreviewHeight = 0, gSensorOrientation = 0;
 int gDisplayRotation = 0;
+
+// Wallets
+std::optional<WalletStore> gWalletStore;
+std::optional<WalletStore::WalletInfo> gActiveWallet;
+std::optional<WalletStore::WalletInfo> gPendingWallet;
+Wallet::RecoveryWords gRecoveryWords{};
+BackupStage gBackupStage = BackupStage::FirstWarning;
+bool gBackupReviewed = false;
+
+// Transactions
+std::optional<QrScanWorker::Result> gScanResult;
+std::optional<Wallet::Signature> gSignature;
+bool gReviewConfirmed = false;
+
+// Known calls
+std::optional<CallDefinitions> gCallDefinitions;
+std::string gCallText;
+std::string gCallInput;
+
+//-----------------------------------------------------------------------------
+// [SECTION] Android helpers (JNI)
+//-----------------------------------------------------------------------------
 
 // NativeActivity has no Java source; use its existing Activity for permission/UI APIs.
 struct ActivityJni {
@@ -280,6 +369,266 @@ void addTextInput(AInputEvent* event) {
         ImGui::GetIO().AddInputCharacter(static_cast<unsigned int>(codepoint));
 }
 
+void updateSoftKeyboard() {
+    const bool wantsKeyboard = ImGui::GetIO().WantTextInput;
+
+    if (wantsKeyboard && !gKeyboardRequested) {
+        gKeyboardRequested = showSoftKeyboard();
+
+    } else if (!wantsKeyboard && gKeyboardRequested) {
+        ANativeActivity_hideSoftInput(gApp->activity, 0);
+        gKeyboardRequested = false;
+    }
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] Formatting helpers
+//-----------------------------------------------------------------------------
+
+std::string hexString(const uint8_t* bytes, size_t size) {
+    std::string text(2 * size + 3, '\0');
+    hex_encode(bytes, size, text.data());
+    text.resize(2 * size + 2);
+
+    return text;
+}
+
+template <size_t N>
+std::string hexString(const std::array<uint8_t, N>& bytes) {
+    return hexString(bytes.data(), bytes.size());
+}
+
+// Big-endian unsigned integer to base-10 digits.
+std::string decimalString(const eth::Uint256& value) {
+    std::string digits = "0";
+
+    for (uint8_t byte : value) {
+        unsigned carry = byte;
+
+        for (char& digit : digits) {
+            carry += static_cast<unsigned>(digit - '0') * 256;
+            digit = static_cast<char>('0' + carry % 10);
+            carry /= 10;
+        }
+
+        while (carry != 0) {
+            digits.push_back(static_cast<char>('0' + carry % 10));
+            carry /= 10;
+        }
+    }
+
+    return std::string(digits.rbegin(), digits.rend());
+}
+
+// Formats base units with a decimal point, e.g. 1500000000 at 9 decimals is "1.5".
+std::string formatUnits(const eth::Uint256& value, size_t decimals) {
+    std::string digits = decimalString(value);
+    if (digits.size() <= decimals)
+        digits.insert(0, decimals - digits.size() + 1, '0');
+
+    const size_t point = digits.size() - decimals;
+    std::string fraction = digits.substr(point);
+    while (!fraction.empty() && fraction.back() == '0')
+        fraction.pop_back();
+
+    const std::string whole = digits.substr(0, point);
+    return fraction.empty() ? whole : whole + "." + fraction;
+}
+
+const Chain* findChain(uint64_t id) {
+    for (const Chain& chain : kChains) {
+        if (chain.id == id)
+            return &chain;
+    }
+
+    return nullptr;
+}
+
+std::string_view trim(std::string_view text) {
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos)
+        return {};
+
+    const size_t last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+std::vector<std::string_view> splitLines(std::string_view text) {
+    std::vector<std::string_view> lines;
+
+    while (!text.empty()) {
+        const size_t end = text.find('\n');
+        lines.push_back(text.substr(0, end));
+        text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+    }
+
+    return lines;
+}
+
+bool isIdentifierChar(char value) {
+    return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
+           (value >= '0' && value <= '9') || value == '_';
+}
+
+bool functionKeywordAt(std::string_view text, size_t offset) {
+    constexpr std::string_view keyword = "function";
+    if (text.substr(offset, keyword.size()) != keyword)
+        return false;
+
+    const size_t end = offset + keyword.size();
+    const bool startsWord = offset == 0 || !isIdentifierChar(text[offset - 1]);
+    const bool endsWord = end == text.size() || !isIdentifierChar(text[end]);
+
+    return startsWord && endsWord;
+}
+
+// Splits "function a(...) function b(...)" into one single-line declaration each.
+std::vector<std::string> splitDeclarations(std::string_view text) {
+    std::vector<std::string> declarations;
+    size_t start = 0;
+
+    for (size_t i = 1; i <= text.size(); ++i) {
+        if (i < text.size() && !functionKeywordAt(text, i))
+            continue;
+
+        std::string declaration(trim(text.substr(start, i - start)));
+        std::replace_if(declaration.begin(), declaration.end(),
+                        [](char value) { return value == '\n' || value == '\r' || value == '\t'; },
+                        ' ');
+
+        while (!declaration.empty() && (declaration.back() == ';' || declaration.back() == ' '))
+            declaration.pop_back();
+
+        if (!declaration.empty())
+            declarations.push_back(std::move(declaration));
+
+        start = i;
+    }
+
+    return declarations;
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] Widgets
+//-----------------------------------------------------------------------------
+
+// Requests a screen change; it is applied at the start of the next frame.
+void openScreen(Screen screen, std::string message = {}) {
+    gNextScreen = screen;
+    gNextMessage = std::move(message);
+}
+
+bool button(const char* label, ButtonStyle style = ButtonStyle::Normal,
+            float height = kButtonHeight) {
+    const ImVec4* colors = style == ButtonStyle::Primary ? kPrimaryColors :
+                           style == ButtonStyle::Danger  ? kDangerColors : nullptr;
+
+    if (colors) {
+        ImGui::PushStyleColor(ImGuiCol_Button, colors[0]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, colors[1]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, colors[2]);
+    }
+
+    const bool pressed = ImGui::Button(label, ImVec2(-1, height));
+
+    if (colors)
+        ImGui::PopStyleColor(3);
+
+    return pressed;
+}
+
+// First tap arms the button, a second tap on the same button confirms.
+bool confirmButton(const char* label, ButtonStyle style = ButtonStyle::Normal,
+                   float height = kButtonHeight) {
+    const ImGuiID id = ImGui::GetID(label);
+    const bool armed = gArmedButton == id;
+    const std::string text = armed ? std::string("TAP AGAIN TO CONFIRM###") + label : label;
+
+    if (!button(text.c_str(), armed ? ButtonStyle::Danger : style, height))
+        return false;
+
+    gArmedButton = armed ? 0 : id;
+    return armed;
+}
+
+void coloredText(const ImVec4& color, const char* text) {
+    ImGui::PushStyleColor(ImGuiCol_Text, color);
+    ImGui::TextWrapped("%s", text);
+    ImGui::PopStyleColor();
+}
+
+void hintText(const char* text) {
+    coloredText(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), text);
+}
+
+void warningText(const char* text) {
+    coloredText(kWarningColor, text);
+}
+
+void bulletText(const char* text) {
+    ImGui::Bullet();
+    ImGui::SameLine();
+    ImGui::TextWrapped("%s", text);
+}
+
+void sectionLabel(const char* text) {
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", text);
+}
+
+void drawMessage() {
+    if (gMessage.empty())
+        return;
+
+    coloredText(kNoticeColor, gMessage.c_str());
+    ImGui::Spacing();
+}
+
+void drawHeader(const char* title, bool canGoBack = true) {
+    if (canGoBack) {
+        if (ImGui::Button("< BACK"))
+            openScreen(Screen::Home);
+
+        ImGui::SameLine();
+    }
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(title);
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    drawMessage();
+}
+
+// Wraps ImGui::BeginTable for label/value rows; call ImGui::EndTable() when true.
+bool beginDetails(const char* id) {
+    if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_BordersOuter))
+        return false;
+
+    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+
+    return true;
+}
+
+void detailRow(std::string_view label, std::string_view value) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextUnformatted(label.data(), label.data() + label.size());
+    ImGui::PopStyleColor();
+
+    ImGui::TableSetColumnIndex(1);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(value.data(), value.data() + value.size());
+    ImGui::PopTextWrapPos();
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] Camera, QR scanning
+//-----------------------------------------------------------------------------
+
 void closeCamera() {
     gCameraPermissionPending = false;
     gQrWorker.reset();
@@ -294,130 +643,56 @@ void closeCamera() {
     gPreviewWidth = gPreviewHeight = 0;
 }
 
-std::string addressHex(const eth::Address& address) {
-    std::array<char, 43> text{};
-    hex_encode(address.data(), address.size(), text.data());
-    return text.data();
-}
-
-void clearRecoveryWords() {
-    OPENSSL_cleanse(gRecoveryWords.data(), sizeof(gRecoveryWords));
-    gPendingAddress.reset();
-    gPendingAddressHex.clear();
-    gBackupStage = BackupStage::None;
-    gBackupReviewed = false;
-}
-
-void createStoredWallet() {
-    gCreateMessage.clear();
-    if (!gWalletStore)
-        return;
-
-    clearRecoveryWords();
-
-    {
-        auto wallet = Wallet::create(gApp->activity->assetManager,
-                                     gRecoveryWords);
-        if (!wallet) {
-            gCreateMessage = "Wallet generation failed. Check the word list.";
-            clearRecoveryWords();
-
-            return;
-        }
-
-        gPendingAddress = wallet->address();
-        gPendingAddressHex = wallet->addressHexEncoded();
-        if (!gWalletStore->save(gPendingAddressHex, *wallet)) {
-            gCreateMessage =
-                "Wallet was not saved. TEE-backed Keystore or "
-                "storage may be unavailable.";
-            clearRecoveryWords();
-
-            return;
-        }
-    }
-
-    // The Wallet destructor above has already wiped the private key.
-    gBackupStage = BackupStage::FirstWarning;
-}
-
-void selectStoredWallet(const WalletStore::WalletInfo& info) {
-    gSelectMessage.clear();
-    if (!gWalletStore)
-        return;
-
-    auto wallet = gWalletStore->load(info.name);
-    if (!wallet) {
-        gSelectMessage = "Could not verify or unlock this wallet.";
-        return;
-    }
-
-    closeCamera();
-    gScanResult.reset();
-    gActiveAddress = wallet->address();
-}
-
 void openCamera() {
     gCameraPermissionPending = false;
-    gScanResult.reset();
 
     if (!gCamera || !gCamera->open()) {
         gQrWorker.reset();
-        gCameraMessage = gCamera ? gCamera->lastError() : "Camera manager unavailable";
+        gMessage = gCamera ? gCamera->lastError() : "Camera manager unavailable.";
         return;
     }
 
     try {
         if (!gQrWorker)
             gQrWorker = std::make_unique<QrScanWorker>();
-        gCameraMessage = "Point the camera at a transaction QR code.";
+
+        gMessage.clear();
 
     } catch (const std::exception&) {
         closeCamera();
-        gCameraMessage = "Could not start QR scanning. Please try again.";
+        gMessage = "Could not start QR scanning. Please try again.";
     }
 }
 
-void collectScanResult() {
+bool cameraActive() {
+    return gCameraPermissionPending || (gCamera && gCamera->isOpen());
+}
+
+// Returns true once a QR code has been decoded into gScanResult.
+bool collectScanResult() {
     if (!gQrWorker)
-        return;
+        return false;
 
     auto completion = gQrWorker->takeResult();
     if (!completion)
-        return;
+        return false;
 
     if (!completion->error.empty()) {
-        gCameraMessage = std::move(completion->error);
+        gMessage = std::move(completion->error);
         closeCamera();
-        return;
+        return false;
     }
 
-    if (completion->result) {
-        gScanResult = std::move(completion->result);
-        gCameraMessage.clear();
-        closeCamera();
-    }
+    if (!completion->result)
+        return false;
+
+    gScanResult = std::move(completion->result);
+    closeCamera();
+
+    return true;
 }
 
-void drawScanResult() {
-    if (!gScanResult)
-        return;
-
-    ImGui::Separator();
-    if (gScanResult->transaction) {
-        const auto* definitions = gCallDefinitions ? &*gCallDefinitions : nullptr;
-        const auto description = gScanResult->transaction->describe(definitions);
-        ImGui::TextWrapped("%s", description.c_str());
-
-    } else {
-        std::array<char, 67> text{};
-        hex_encode(gScanResult->hash.data(), gScanResult->hash.size(), text.data());
-        ImGui::TextWrapped("Scanned hash: %s", text.data());
-        ImGui::TextWrapped("This QR contains only a hash; transaction details are unavailable.");
-    }
-}
-
-// Move this call anywhere in the ImGui layout; Camera owns no UI/GL resources.
+// Uploads the newest camera frame and draws it rotated to the display orientation.
 void drawCameraPreview() {
     if (!gCamera || !gResumed)
         return;
@@ -425,6 +700,7 @@ void drawCameraPreview() {
     if (gCameraPermissionPending) {
         if (!cameraPermission(false))
             return;
+
         openCamera();
     }
 
@@ -460,10 +736,9 @@ void drawCameraPreview() {
 
     if (!gCamera->isOpen()) {
         if (!gCamera->lastError().empty())
-            gCameraMessage = gCamera->lastError();
+            gMessage = gCamera->lastError();
 
         closeCamera();
-
         return;
     }
 
@@ -477,8 +752,7 @@ void drawCameraPreview() {
     const float width = (turns % 2) ? gPreviewHeight : gPreviewWidth;
     const float height = (turns % 2) ? gPreviewWidth : gPreviewHeight;
     const auto available = ImGui::GetContentRegionAvail();
-    const float previewHeight = std::min(available.y, ImGui::GetWindowHeight() * 0.4f);
-    const float scale = std::min(available.x / width, previewHeight / height);
+    const float scale = std::min(available.x / width, available.y / height);
 
     if (scale <= 0)
         return;
@@ -495,163 +769,468 @@ void drawCameraPreview() {
     ImGui::Dummy(size);
 }
 
+//-----------------------------------------------------------------------------
+// [SECTION] Wallets
+//-----------------------------------------------------------------------------
+
+void clearRecoveryWords() {
+    OPENSSL_cleanse(gRecoveryWords.data(), sizeof(gRecoveryWords));
+    gPendingWallet.reset();
+    gBackupStage = BackupStage::FirstWarning;
+    gBackupReviewed = false;
+}
+
+void createStoredWallet() {
+    if (!gWalletStore)
+        return;
+
+    clearRecoveryWords();
+
+    {
+        auto wallet = Wallet::create(gApp->activity->assetManager, gRecoveryWords);
+        if (!wallet) {
+            gMessage = "Wallet generation failed. Check the word list.";
+            clearRecoveryWords();
+            return;
+        }
+
+        WalletStore::WalletInfo info{wallet->addressHexEncoded(), wallet->address()};
+        if (!gWalletStore->save(info.name, *wallet)) {
+            gMessage = "Wallet was not saved. TEE-backed Keystore or storage may be unavailable.";
+            clearRecoveryWords();
+            return;
+        }
+
+        gPendingWallet = std::move(info);
+    }
+
+    // The Wallet destructor above has already wiped the private key.
+    openScreen(Screen::Backup);
+}
+
+void confirmBackup() {
+    gActiveWallet = gPendingWallet;
+    clearRecoveryWords();
+
+    openScreen(Screen::Home, "Wallet created and set as the active wallet.");
+}
+
+void selectStoredWallet(const WalletStore::WalletInfo& info) {
+    if (!gWalletStore)
+        return;
+
+    // Unlocking once proves the Keystore key still decrypts this wallet.
+    if (!gWalletStore->load(info.name)) {
+        gMessage = "Could not verify or unlock this wallet.";
+        return;
+    }
+
+    gActiveWallet = info;
+    openScreen(Screen::Home, "Active wallet changed.");
+}
+
+void drawWalletsScreen() {
+    drawHeader("Wallets");
+
+    if (!gWalletStore) {
+        ImGui::TextWrapped("Wallet storage could not be opened. Check the app's private storage.");
+        return;
+    }
+
+    const auto wallets = gWalletStore->list();
+    if (wallets.empty()) {
+        ImGui::TextWrapped("No wallets yet.");
+
+        if (button("CREATE WALLET", ButtonStyle::Primary))
+            openScreen(Screen::CreateWallet);
+
+        return;
+    }
+
+    hintText("The active wallet signs every new transaction.");
+
+    for (size_t i = 0; i < wallets.size(); ++i) {
+        const auto& info = wallets[i];
+        const bool active = gActiveWallet && gActiveWallet->address == info.address;
+        const auto flags = ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+
+        ImGui::PushID(static_cast<int>(i));
+
+        if (ImGui::BeginChild("wallet", ImVec2(0, 0), flags)) {
+            ImGui::Text("Wallet %zu%s", i + 1, active ? "  -  ACTIVE" : "");
+            ImGui::TextWrapped("%s", hexString(info.address).c_str());
+
+            ImGui::BeginDisabled(active);
+            const auto style = active ? ButtonStyle::Normal : ButtonStyle::Primary;
+            if (button(active ? "ACTIVE" : "USE THIS WALLET", style, kRowButtonHeight))
+                selectStoredWallet(info);
+
+            ImGui::EndDisabled();
+        }
+
+        ImGui::EndChild();
+        ImGui::PopID();
+    }
+
+    ImGui::Spacing();
+
+    if (button("CREATE NEW WALLET"))
+        openScreen(Screen::CreateWallet);
+}
+
+void drawCreateWalletScreen() {
+    drawHeader("Create wallet");
+
+    if (!gWalletStore) {
+        ImGui::TextWrapped("Wallet storage could not be opened. No wallet can be saved.");
+        return;
+    }
+
+    sectionLabel("BEFORE YOU START");
+    bulletText("A new private key is generated on this device and sealed by the "
+               "TEE-backed Keystore.");
+    bulletText("You will see 24 recovery words once. They are never saved.");
+    bulletText("Have pen and paper ready. Anyone with the words controls the funds.");
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    if (button("CREATE WALLET", ButtonStyle::Primary))
+        createStoredWallet();
+}
+
 void drawRecoveryWords() {
-    if (!ImGui::BeginTable("recovery words", 2))
+    const auto flags = ImGuiTableFlags_BordersOuter | ImGuiTableFlags_RowBg;
+    if (!ImGui::BeginTable("recovery words", 2, flags))
         return;
 
     for (size_t i = 0; i < 12; ++i) {
         ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        ImGui::Text("%2zu. %s", i + 1, gRecoveryWords[i].data());
 
-        ImGui::TableSetColumnIndex(1);
-        ImGui::Text("%2zu. %s", i + 13, gRecoveryWords[i + 12].data());
+        for (size_t column = 0; column < 2; ++column) {
+            const size_t word = i + column * 12;
+
+            ImGui::TableSetColumnIndex(static_cast<int>(column));
+            ImGui::TextDisabled("%2zu", word + 1);
+            ImGui::SameLine();
+            ImGui::TextUnformatted(gRecoveryWords[word].data());
+        }
     }
 
     ImGui::EndTable();
 }
 
 void drawBackupScreen() {
-    ImGui::TextUnformatted("Back up your new wallet");
-    ImGui::TextWrapped("Address: %s", gPendingAddressHex.c_str());
+    drawHeader("Recovery phrase", false);
+
+    if (!gPendingWallet) {
+        ImGui::TextWrapped("No wallet is waiting for a backup.");
+        return;
+    }
+
+    ImGui::TextDisabled("Wallet address");
+    ImGui::TextWrapped("%s", gPendingWallet->name.c_str());
     ImGui::Spacing();
+
     drawRecoveryWords();
     ImGui::Spacing();
 
     if (gBackupStage == BackupStage::FirstWarning) {
-        ImGui::TextWrapped(
-            "WARNING 1/2: Write all 24 words in order and keep them private. "
-            "They are not saved and may be lost if the app closes. "
-            "Anyone with them can take the funds in this wallet.");
+        warningText("STEP 1 OF 2: Write all 24 words in order and keep them private. "
+                    "They are not saved and may be lost if the app closes. "
+                    "Anyone with them can take the funds in this wallet.");
 
-        if (ImGui::Button("I wrote down all 24 words", ImVec2(-1, 110)))
+        if (button("I WROTE DOWN ALL 24 WORDS", ButtonStyle::Primary))
             gBackupStage = BackupStage::FinalWarning;
 
-    } else {
-        ImGui::TextWrapped(
-            "WARNING 2/2: These words will disappear after confirmation. "
-            "Check your written copy now; you cannot reveal them again here.");
-
-        ImGui::Checkbox("I checked every word in order", &gBackupReviewed);
-        ImGui::BeginDisabled(!gBackupReviewed);
-
-        if (ImGui::Button("BACKUP VERIFIED - HIDE WORDS", ImVec2(-1, 110))) {
-            gActiveAddress = gPendingAddress;
-            gSelectMessage.clear();
-            clearRecoveryWords();
-            gSelectWalletTab = true;
-        }
-
-        ImGui::EndDisabled();
+        return;
     }
+
+    warningText("STEP 2 OF 2: These words disappear after confirmation. "
+                "Check your written copy now; they cannot be shown again.");
+
+    ImGui::Checkbox("I checked every word in order", &gBackupReviewed);
+    ImGui::BeginDisabled(!gBackupReviewed);
+
+    if (button("BACKUP VERIFIED - HIDE WORDS", ButtonStyle::Primary))
+        confirmBackup();
+
+    ImGui::EndDisabled();
 }
 
-void drawCameraControls() {
-    if (!gActiveAddress) {
+//-----------------------------------------------------------------------------
+// [SECTION] Transactions
+//-----------------------------------------------------------------------------
+
+void clearTransaction() {
+    gScanResult.reset();
+    gSignature.reset();
+    gReviewConfirmed = false;
+}
+
+void startScan() {
+    clearTransaction();
+
+    if (!gCamera) {
+        gMessage = "Camera manager unavailable.";
+        return;
+    }
+
+    if (cameraPermission(true)) {
+        openCamera();
+        return;
+    }
+
+    gCameraPermissionPending = true;
+    gMessage = "Camera permission required. Allow access in the prompt or app settings.";
+}
+
+void signScannedTransaction() {
+    if (!gWalletStore || !gScanResult || !gActiveWallet)
+        return;
+
+    // The private key lives only inside this scope; ~Wallet wipes it.
+    auto wallet = gWalletStore->load(gActiveWallet->name);
+    if (!wallet || wallet->address() != gActiveWallet->address) {
+        gMessage = "Could not unlock the active wallet. Nothing was signed.";
+        return;
+    }
+
+    Wallet::Signature signature;
+    if (!wallet->sign(gScanResult->hash, signature)) {
+        gMessage = "Signing failed. Nothing was signed.";
+        return;
+    }
+
+    gSignature = signature;
+    openScreen(Screen::Signature);
+}
+
+void drawScanScreen() {
+    drawHeader("New transaction");
+
+    if (!gActiveWallet) {
         ImGui::TextWrapped("Select an active wallet before scanning a transaction.");
         return;
     }
 
-    collectScanResult();
-
-    const char* label = gCamera && gCamera->isOpen() ?
-                        "CLOSE CAMERA" : "SCAN TX";
-    if (ImGui::Button(label, ImVec2(-1, 180))) {
-        if (gCamera && gCamera->isOpen()) {
-            closeCamera();
-            gCameraMessage.clear();
-
-        } else if (cameraPermission(true)) {
-            openCamera();
-
-        } else {
-            gCameraPermissionPending = true;
-            gCameraMessage =
-                "Camera permission required. Allow access in the prompt or app settings.";
-        }
+    if (collectScanResult()) {
+        openScreen(Screen::Review);
+        return;
     }
 
-    if (!gCameraMessage.empty())
-        ImGui::TextWrapped("%s", gCameraMessage.c_str());
+    if (!cameraActive()) {
+        if (button("START CAMERA", ButtonStyle::Primary))
+            startScan();
 
-    drawScanResult();
+        return;
+    }
+
+    if (gCameraPermissionPending && button("ASK FOR CAMERA PERMISSION AGAIN"))
+        startScan();
+
+    hintText("Point the camera at the transaction QR code from your online device.");
+    ImGui::Spacing();
+
     drawCameraPreview();
 }
 
-void drawSelectWalletMenu() {
-    if (!gWalletStore) {
-        ImGui::TextWrapped("Wallet store could not be opened. Check the app's private storage.");
+void drawCallDetails(const Transaction::Details& details) {
+    sectionLabel("CALL");
+
+    if (details.data.empty()) {
+        ImGui::TextWrapped("None. This is a plain value transfer.");
         return;
     }
 
-    if (gActiveAddress) {
-        const std::string active = addressHex(*gActiveAddress);
-        ImGui::TextUnformatted("Active wallet for this session:");
-        ImGui::TextWrapped("%s", active.c_str());
-
-    } else {
-        ImGui::TextUnformatted("No active wallet selected.");
-    }
-
-    if (!gSelectMessage.empty())
-        ImGui::TextWrapped("%s", gSelectMessage.c_str());
-
-    ImGui::Separator();
-    const auto wallets = gWalletStore->list();
-    if (wallets.empty()) {
-        ImGui::TextWrapped("No saved wallets. Open Create wallet to add one.");
+    if (!details.to) {
+        ImGui::TextWrapped("Contract deployment with %zu bytes of code.", details.data.size());
         return;
     }
 
-    const float listHeight = std::min(600.0f, ImGui::GetWindowHeight() * 0.3f);
+    std::optional<std::string> decoded;
+    if (gCallDefinitions)
+        decoded = gCallDefinitions->describe(details.data);
 
-    if (ImGui::BeginChild("saved wallets", ImVec2(0, listHeight),
-                          ImGuiChildFlags_Borders)) {
-        for (size_t i = 0; i < wallets.size(); ++i) {
-            const auto& info = wallets[i];
-            const bool active = gActiveAddress == info.address;
-            const std::string address = addressHex(info.address);
-            ImGui::PushID(static_cast<int>(i));
+    if (!decoded) {
+        const auto selector = hexString(details.data.data(), std::min<size_t>(4, details.data.size()));
+        const auto text = "Unknown call " + selector + ". Add it in Known calls to "
+                          "see its arguments before signing.";
 
-            ImGui::TextWrapped("%s", address.c_str());
-            if (ImGui::Button(active ? "ACTIVE" : "SELECT THIS WALLET",
-                              ImVec2(-1, 80)) && !active)
-                selectStoredWallet(info);
+        warningText(text.c_str());
+        return;
+    }
 
-            ImGui::Separator();
-            ImGui::PopID();
+    // describe() yields "Function (selector match): sig" then "name: value" lines.
+    if (beginDetails("call")) {
+        for (const auto line : splitLines(*decoded)) {
+            const size_t colon = line.find(": ");
+            if (colon == std::string_view::npos)
+                continue;
+
+            const auto label = line.substr(0, colon);
+            detailRow(label.starts_with("Function") ? "Function" : label, line.substr(colon + 2));
         }
+
+        ImGui::EndTable();
     }
 
-    ImGui::EndChild();
-    ImGui::Spacing();
-    drawCameraControls();
+    hintText("A selector match does not prove what the contract actually does.");
 }
 
-void drawCreateWalletMenu() {
-    if (gCameraPermissionPending || (gCamera && gCamera->isOpen()))
-        closeCamera();
+void drawRawDetails(const Transaction& transaction) {
+    const auto& details = transaction.details();
+    sectionLabel("RAW");
 
-    if (!gWalletStore) {
-        ImGui::TextWrapped("Wallet store could not be opened. No wallet can be saved.");
+    if (beginDetails("raw")) {
+        detailRow("Signing hash", hexString(transaction.signingHash()));
+        detailRow("Data size", std::to_string(details.data.size()) + " bytes");
+        detailRow("Access list", std::to_string(details.accessList.size()) + " entries");
+
+        ImGui::EndTable();
+    }
+
+    if (!details.data.empty() && ImGui::TreeNode("Show call data")) {
+        ImGui::TextWrapped("%s", hexString(details.data.data(), details.data.size()).c_str());
+        ImGui::TreePop();
+    }
+
+    if (!details.accessList.empty() && ImGui::TreeNode("Show access list")) {
+        for (const auto& entry : details.accessList) {
+            ImGui::TextWrapped("%s", hexString(entry.address).c_str());
+
+            for (const auto& key : entry.storageKeys)
+                hintText(hexString(key).c_str());
+        }
+
+        ImGui::TreePop();
+    }
+
+    if (details.signature)
+        warningText("This QR already carries a signature. Signing creates a new one.");
+}
+
+void drawTransactionDetails(const Transaction& transaction) {
+    const auto& details = transaction.details();
+    const Chain* chain = findChain(details.chainId);
+    const std::string chainId = std::to_string(details.chainId);
+    const std::string symbol = chain ? chain->symbol : "(native units)";
+
+    sectionLabel("TRANSACTION");
+
+    if (beginDetails("transaction")) {
+        detailRow("Network", chain ? std::string(chain->name) + " (" + chainId + ")" :
+                                     "Unknown chain " + chainId);
+
+        detailRow("To", details.to ? hexString(*details.to) : "New contract");
+        detailRow("Value", formatUnits(details.value, 18) + " " + symbol);
+        detailRow("Nonce", std::to_string(details.nonce));
+        detailRow("Gas limit", std::to_string(details.gasLimit));
+        detailRow("Max fee", formatUnits(details.maxFeePerGas, 9) + " gwei");
+        detailRow("Priority fee", formatUnits(details.maxPriorityFeePerGas, 9) + " gwei");
+
+        ImGui::EndTable();
+    }
+
+    if (!chain)
+        warningText("This chain ID is not recognized. Make sure it is the network you expect.");
+
+    drawCallDetails(details);
+    drawRawDetails(transaction);
+}
+
+void drawBlindHash(const eth::Hash& hash) {
+    sectionLabel("HASH");
+    ImGui::TextWrapped("%s", hexString(hash).c_str());
+    ImGui::Spacing();
+
+    warningText("Only a 32-byte hash was scanned, so the transaction behind it cannot be "
+                "shown. Signing it blindly can authorize anything. Continue only if you "
+                "trust the device that produced it.");
+}
+
+void drawReviewScreen() {
+    drawHeader("Review transaction");
+
+    if (!gScanResult || !gActiveWallet) {
+        ImGui::TextWrapped("Nothing to review.");
         return;
     }
 
-    ImGui::TextWrapped(
-        "Create a wallet, protect its key with the TEE, then write down "
-        "the 24 recovery words shown on the next screen.");
+    sectionLabel("SIGNING WALLET");
+    ImGui::TextWrapped("%s", gActiveWallet->name.c_str());
 
-    if (ImGui::Button("CREATE AND SAVE WALLET", ImVec2(-1, 150)))
-        createStoredWallet();
+    const bool blind = !gScanResult->transaction;
+    if (blind)
+        drawBlindHash(gScanResult->hash);
+    else
+        drawTransactionDetails(*gScanResult->transaction);
 
-    if (!gCreateMessage.empty())
-        ImGui::TextWrapped("%s", gCreateMessage.c_str());
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    ImGui::Checkbox(blind ? "I trust where this hash came from" : "I checked every detail above",
+                    &gReviewConfirmed);
+
+    ImGui::BeginDisabled(!gReviewConfirmed);
+
+    if (button(blind ? "SIGN HASH" : "SIGN TRANSACTION", ButtonStyle::Primary))
+        signScannedTransaction();
+
+    ImGui::EndDisabled();
+
+    if (button("REJECT", ButtonStyle::Danger))
+        openScreen(Screen::Home, "Transaction rejected. Nothing was signed.");
 }
+
+void drawSignatureScreen() {
+    drawHeader("Signature");
+
+    if (!gSignature || !gScanResult || !gActiveWallet) {
+        ImGui::TextWrapped("No signature to show.");
+        return;
+    }
+
+    const auto& signature = *gSignature;
+    const auto yParity = static_cast<uint8_t>(signature.recoveryId);
+
+    std::array<uint8_t, 65> packed{};
+    std::copy(signature.r.begin(), signature.r.end(), packed.begin());
+    std::copy(signature.s.begin(), signature.s.end(), packed.begin() + 32);
+    packed[64] = yParity;
+
+    sectionLabel("SIGNED BY");
+    ImGui::TextWrapped("%s", gActiveWallet->name.c_str());
+
+    sectionLabel("SIGNATURE (r, s, y parity)");
+    ImGui::TextWrapped("%s", hexString(packed).c_str());
+
+    sectionLabel("COMPONENTS");
+
+    if (beginDetails("signature")) {
+        detailRow("r", hexString(signature.r));
+        detailRow("s", hexString(signature.s));
+        detailRow("y parity", std::to_string(yParity));
+        detailRow("Hash", hexString(gScanResult->hash));
+
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    hintText("Enter this signature on your online device to broadcast the transaction.");
+    ImGui::Spacing();
+
+    if (button("DONE", ButtonStyle::Primary))
+        openScreen(Screen::Home);
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] Known calls
+//-----------------------------------------------------------------------------
 
 void loadCallDefinitions() {
     gCallDefinitions.reset();
-    gCallDraft.clear();
-    gCallMessage.clear();
+    gCallText.clear();
 
     std::string error;
     auto packaged = call_storage::packaged(gApp->activity->assetManager, error);
@@ -660,111 +1239,322 @@ void loadCallDefinitions() {
         auto parsed = CallDefinitions::parse(*packaged, error);
         if (parsed) {
             gCallDefinitions = std::move(parsed);
-            gCallDraft = *packaged;
+            gCallText = std::move(*packaged);
         }
     }
 
     if (!error.empty())
-        gCallMessage = "Packaged definitions: " + error;
+        gMessage = "Default calls: " + error;
 
-    auto saved = call_storage::overrideText(
-        gApp->activity->internalDataPath, error);
+    auto saved = call_storage::overrideText(gApp->activity->internalDataPath, error);
     if (!error.empty())
-        gCallMessage = "Saved definitions: " + error;
+        gMessage = "Saved calls: " + error;
 
     if (!saved)
         return;
 
-    gCallDraft = *saved;
     auto parsed = CallDefinitions::parse(*saved, error);
     if (!parsed) {
-        gCallMessage = "Saved definitions: " + error;
+        gMessage = "Saved calls: " + error;
         if (gCallDefinitions)
-            gCallMessage += ". Packaged definitions remain active.";
+            gMessage += ". Default calls remain active.";
 
         return;
     }
 
     gCallDefinitions = std::move(parsed);
-    gCallMessage = "Saved definitions loaded.";
+    gCallText = std::move(*saved);
 }
 
-void saveCallDefinitions() {
+// Validates, persists and activates a complete known calls text.
+bool saveCallText(std::string text) {
     std::string error;
-    auto parsed = CallDefinitions::parse(gCallDraft, error);
+    auto parsed = CallDefinitions::parse(text, error);
+
     if (!parsed) {
-        gCallMessage = error;
-        return;
+        gMessage = error;
+        return false;
     }
 
-    if (!call_storage::save(gApp->activity->internalDataPath,
-                            gCallDraft, error)) {
-        gCallMessage = error;
-        return;
+    if (!call_storage::save(gApp->activity->internalDataPath, text, error)) {
+        gMessage = error;
+        return false;
     }
 
     gCallDefinitions = std::move(parsed);
-    gCallMessage = "Saved " + std::to_string(gCallDefinitions->size()) +
-                   " call definitions.";
+    gCallText = std::move(text);
+
+    return true;
 }
 
-void restoreCallDefinitions() {
+std::vector<KnownCall> knownCalls() {
+    std::vector<KnownCall> calls;
+    const auto lines = splitLines(gCallText);
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const auto text = trim(lines[i].substr(0, lines[i].find('#')));
+        if (!text.empty())
+            calls.push_back({i, text});
+    }
+
+    return calls;
+}
+
+void addKnownCalls() {
+    const auto declarations = splitDeclarations(gCallInput);
+    if (declarations.empty()) {
+        gMessage = "Type at least one function declaration.";
+        return;
+    }
+
+    std::string text = gCallText;
+    if (!text.empty() && text.back() != '\n')
+        text.push_back('\n');
+
+    for (const auto& declaration : declarations) {
+        std::string error;
+        if (!CallDefinitions::parse(declaration, error)) {
+            if (error.starts_with("line 1: "))
+                error.erase(0, 8);
+
+            gMessage = "\"" + declaration + "\": " + error;
+            return;
+        }
+
+        std::string candidate = text + declaration + "\n";
+        if (!CallDefinitions::parse(candidate, error)) {
+            const bool duplicate = error.find("duplicate") != std::string::npos;
+            gMessage = "\"" + declaration + "\": " + (duplicate ? "already a known call" : error);
+            return;
+        }
+
+        text = std::move(candidate);
+    }
+
+    if (!saveCallText(std::move(text)))
+        return;
+
+    gCallInput.clear();
+    gMessage = "Added " + std::to_string(declarations.size()) +
+               (declarations.size() == 1 ? " call." : " calls.");
+}
+
+void removeKnownCall(size_t line) {
+    const auto lines = splitLines(gCallText);
+    std::string text;
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i == line)
+            continue;
+
+        text.append(lines[i]);
+        text.push_back('\n');
+    }
+
+    if (saveCallText(std::move(text)))
+        gMessage = "Call removed.";
+}
+
+void restoreKnownCalls() {
     std::string error;
     auto packaged = call_storage::packaged(gApp->activity->assetManager, error);
     if (!packaged) {
-        gCallMessage = error;
+        gMessage = error;
         return;
     }
 
     auto parsed = CallDefinitions::parse(*packaged, error);
-    if (!parsed || !call_storage::reset(
-            gApp->activity->internalDataPath, error)) {
-        gCallMessage = error;
+    if (!parsed || !call_storage::reset(gApp->activity->internalDataPath, error)) {
+        gMessage = error;
         return;
     }
 
     gCallDefinitions = std::move(parsed);
-    gCallDraft = *packaged;
-    gCallMessage = "Packaged definitions restored.";
+    gCallText = std::move(*packaged);
+    gMessage = "Default calls restored.";
 }
 
-void drawCallDefinitionsMenu() {
-    if (gCameraPermissionPending || gQrWorker || (gCamera && gCamera->isOpen()))
-        closeCamera();
+void drawKnownCallsScreen() {
+    drawHeader("Known calls");
+    hintText("Transactions calling these functions have their arguments decoded before "
+             "signing. Values are shown in base units.");
 
-    ImGui::TextWrapped(
-        "The APK provides calls.txt. SAVE keeps a private editable copy. "
-        "Write one function per line. Supported types: address, "
-        "uint, uint8..uint256, and their [] arrays. Values are shown in "
-        "base units; selector matches do not verify contract behavior.");
-
-    if (gCallDefinitions)
-        ImGui::Text("Active definitions: %zu", gCallDefinitions->size());
-    else
-        ImGui::TextUnformatted("No valid definitions are active.");
-
-    const float height = std::max(250.0f,
-                                  ImGui::GetContentRegionAvail().y - 210.0f);
-    ImGui::InputTextMultiline("##calls", &gCallDraft,
-                              ImVec2(-1, height),
+    sectionLabel("ADD CALLS");
+    const float inputHeight = ImGui::GetTextLineHeight() * 4 + ImGui::GetStyle().FramePadding.y * 2;
+    ImGui::InputTextMultiline("##new calls", &gCallInput, ImVec2(-1, inputHeight),
                               ImGuiInputTextFlags_WordWrap);
 
-    if (ImGui::Button("VALIDATE")) {
-        std::string error;
-        auto parsed = CallDefinitions::parse(gCallDraft, error);
-        gCallMessage = parsed ?
-            "Valid: " + std::to_string(parsed->size()) + " functions." : error;
+    hintText("One or more declarations, e.g. function transfer(address to, uint256 value) "
+             "function approve(address spender, uint256 amount). Types: address, uint, "
+             "uint8..uint256 and their [] arrays.");
+
+    ImGui::BeginDisabled(trim(gCallInput).empty());
+
+    if (button("ADD", ButtonStyle::Primary))
+        addKnownCalls();
+
+    ImGui::EndDisabled();
+
+    const auto calls = knownCalls();
+    const std::string title = "KNOWN CALLS (" + std::to_string(calls.size()) + ")";
+    sectionLabel(title.c_str());
+
+    if (calls.empty())
+        ImGui::TextWrapped("No known calls. Every call will show as unknown.");
+
+    std::optional<size_t> removed;
+
+    for (size_t i = 0; i < calls.size(); ++i) {
+        const auto flags = ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+        ImGui::PushID(static_cast<int>(i));
+
+        if (ImGui::BeginChild("call", ImVec2(0, 0), flags)) {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(calls[i].text.data(), calls[i].text.data() + calls[i].text.size());
+            ImGui::PopTextWrapPos();
+
+            if (confirmButton("REMOVE", ButtonStyle::Normal, kRowButtonHeight))
+                removed = calls[i].line;
+        }
+
+        ImGui::EndChild();
+        ImGui::PopID();
     }
 
-    ImGui::SameLine();
-    if (ImGui::Button("SAVE"))
-        saveCallDefinitions();
+    // Removal rewrites gCallText, which the KnownCall views point into.
+    if (removed)
+        removeKnownCall(*removed);
 
-    if (ImGui::Button("RESTORE PACKAGED DEFAULTS"))
-        restoreCallDefinitions();
+    ImGui::Spacing();
 
-    if (!gCallMessage.empty())
-        ImGui::TextWrapped("%s", gCallMessage.c_str());
+    if (confirmButton("RESTORE DEFAULT CALLS"))
+        restoreKnownCalls();
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] Home screen, navigation
+//-----------------------------------------------------------------------------
+
+void drawHomeScreen() {
+    ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.6f);
+    ImGui::TextUnformatted("Airgap");
+    ImGui::PopFont();
+
+    hintText("Offline Ethereum signer");
+    ImGui::Spacing();
+    drawMessage();
+
+    const auto flags = ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+
+    if (ImGui::BeginChild("active wallet", ImVec2(0, 0), flags)) {
+        ImGui::TextDisabled("ACTIVE WALLET");
+
+        if (gActiveWallet)
+            ImGui::TextWrapped("%s", gActiveWallet->name.c_str());
+        else
+            hintText("None selected. Choose one in Wallets or create a new wallet.");
+    }
+
+    ImGui::EndChild();
+    ImGui::Spacing();
+
+    ImGui::BeginDisabled(!gActiveWallet);
+
+    if (button("NEW TRANSACTION", ButtonStyle::Primary))
+        openScreen(Screen::Scan);
+
+    ImGui::EndDisabled();
+
+    const size_t walletCount = gWalletStore ? gWalletStore->list().size() : 0;
+    const size_t callCount = gCallDefinitions ? gCallDefinitions->size() : 0;
+    const std::string wallets = "WALLETS (" + std::to_string(walletCount) + ")";
+    const std::string calls = "KNOWN CALLS (" + std::to_string(callCount) + ")";
+
+    if (button(wallets.c_str()))
+        openScreen(Screen::Wallets);
+
+    if (button("CREATE WALLET"))
+        openScreen(Screen::CreateWallet);
+
+    if (button(calls.c_str()))
+        openScreen(Screen::KnownCalls);
+}
+
+void drawScreen() {
+    switch (gScreen) {
+    case Screen::Home:         drawHomeScreen(); break;
+    case Screen::KnownCalls:   drawKnownCallsScreen(); break;
+
+    case Screen::Wallets:      drawWalletsScreen(); break;
+    case Screen::CreateWallet: drawCreateWalletScreen(); break;
+    case Screen::Backup:       drawBackupScreen(); break;
+
+    case Screen::Scan:         drawScanScreen(); break;
+    case Screen::Review:       drawReviewScreen(); break;
+    case Screen::Signature:    drawSignatureScreen(); break;
+    }
+}
+
+// Leaving a screen releases what it owns: camera, transaction, recovery words.
+void applyNavigation() {
+    if (!gNextScreen)
+        return;
+
+    const Screen screen = *std::exchange(gNextScreen, std::nullopt);
+    const bool transactionFlow = screen == Screen::Scan || screen == Screen::Review ||
+                                 screen == Screen::Signature;
+
+    if (screen != Screen::Scan)
+        closeCamera();
+
+    if (!transactionFlow)
+        clearTransaction();
+
+    if (screen != Screen::Backup)
+        clearRecoveryWords();
+
+    gScreen = screen;
+    gMessage = std::move(gNextMessage);
+    gNextMessage.clear();
+    gArmedButton = 0;
+
+    ImGui::SetScrollY(0.0f);
+
+    if (screen == Screen::Scan)
+        startScan();
+}
+
+// Touch screens have no scroll wheel: dragging empty space scrolls the window.
+void dragToScroll() {
+    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) || ImGui::IsAnyItemActive())
+        return;
+
+    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+        ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] Graphics lifecycle
+//-----------------------------------------------------------------------------
+
+void applyStyle() {
+    ImGui::StyleColorsDark();
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowBorderSize = 0.0f;
+    style.FramePadding = ImVec2(8.0f, 6.0f);
+    style.ItemSpacing = ImVec2(8.0f, 8.0f);
+    style.FrameRounding = 6.0f;
+    style.ChildRounding = 8.0f;
+    style.GrabRounding = 6.0f;
+
+    style.Colors[ImGuiCol_Button] = ImVec4(0.20f, 0.22f, 0.27f, 1.0f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.26f, 0.29f, 0.35f, 1.0f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.16f, 0.18f, 0.22f, 1.0f);
+
+    // Scale UI for a phone screen.
+    style.ScaleAllSizes(kUiScale);
+    style.FontScaleDpi = kUiScale;
 }
 
 bool initGraphics(android_app* app) {
@@ -775,7 +1565,6 @@ bool initGraphics(android_app* app) {
         return false;
 
     gApp = app;
-
     gDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 
     if (gDisplay == EGL_NO_DISPLAY) {
@@ -794,9 +1583,7 @@ bool initGraphics(android_app* app) {
                                        EGL_ALPHA_SIZE,   8,
 
                                        EGL_DEPTH_SIZE,   0,
-
                                        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-
                                        EGL_NONE};
 
     EGLConfig config = nullptr;
@@ -813,13 +1600,10 @@ bool initGraphics(android_app* app) {
     }
 
     EGLint format = 0;
-
     eglGetConfigAttrib(gDisplay, config, EGL_NATIVE_VISUAL_ID, &format);
-
     ANativeWindow_setBuffersGeometry(app->window, 0, 0, format);
 
     const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
-
     gContext = eglCreateContext(gDisplay, config, EGL_NO_CONTEXT, contextAttributes);
 
     if (gContext == EGL_NO_CONTEXT) {
@@ -839,38 +1623,18 @@ bool initGraphics(android_app* app) {
         return false;
     }
 
-    //
     // Dear ImGui
-    //
-
     IMGUI_CHECKVERSION();
-
     ImGui::CreateContext();
 
-    ImGuiIO& io = ImGui::GetIO();
+    // We don't need imgui.ini for a fixed wallet UI.
+    ImGui::GetIO().IniFilename = nullptr;
 
-    // We don't really need imgui.ini for a fixed wallet UI.
-    io.IniFilename = nullptr;
-
-    ImGui::StyleColorsDark();
-
+    applyStyle();
     ImGui_ImplAndroid_Init(app->window);
-
     ImGui_ImplOpenGL3_Init("#version 300 es");
 
-    //
-    // Scale UI for a phone screen.
-    //
-    // You will probably tune this later.
-    //
-
-    ImGuiStyle& style = ImGui::GetStyle();
-
-    style.ScaleAllSizes(3.5f);
-    style.FontScaleDpi = 3.5f;
-
     gInitialized = true;
-
     LOGI("ImGui initialized");
 
     return true;
@@ -883,11 +1647,11 @@ void shutdownGraphics() {
 
     if (gKeyboardRequested)
         ANativeActivity_hideSoftInput(gApp->activity, 0);
+
     gKeyboardRequested = false;
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplAndroid_Shutdown();
-
     ImGui::DestroyContext();
 
     eglMakeCurrent(gDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -904,7 +1668,6 @@ void shutdownGraphics() {
     gDisplay = EGL_NO_DISPLAY;
     gSurface = EGL_NO_SURFACE;
     gContext = EGL_NO_CONTEXT;
-
     gInitialized = false;
 
     LOGI("ImGui shutdown");
@@ -912,115 +1675,83 @@ void shutdownGraphics() {
 
 } // namespace
 
-void drawFrame() {
-    // [SECTION_START] Frame setup
+//-----------------------------------------------------------------------------
+// [SECTION] Public API
+//-----------------------------------------------------------------------------
 
+void initialize(android_app* app) {
+    gApp = app;
+    ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_SECURE, 0);
+    gWalletStore = WalletStore::open(app->activity);
+    gActiveWallet.reset();
+    clearRecoveryWords();
+    clearTransaction();
+
+    gScreen = Screen::Home;
+    gNextScreen.reset();
+    gMessage.clear();
+    gArmedButton = 0;
+    gKeyboardRequested = false;
+
+    loadCallDefinitions();
+    gCamera = Camera::init();
+}
+
+void shutdown() {
+    closeCamera();
+    clearTransaction();
+    shutdownGraphics();
+    clearRecoveryWords();
+    gActiveWallet.reset();
+    gWalletStore.reset();
+
+    gCallDefinitions.reset();
+    gCallText.clear();
+    gCallInput.clear();
+    gCamera.reset();
+}
+
+bool isReady() {
+    return gInitialized;
+}
+
+void drawFrame() {
     if (!gInitialized)
         return;
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplAndroid_NewFrame();
-
     ImGui::NewFrame();
 
-    ImGuiIO& io = ImGui::GetIO();
-    ImGuiStyle& style = ImGui::GetStyle();
-
-    // [SECTION_END] Frame setup
-
-    // [SECTION_START] Window setup
-
-    ImGui::SetNextWindowPos(ImVec2(0, io.DisplaySize.y * 0.1), ImGuiCond_Always);
-
-    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y * 0.9), ImGuiCond_Always);
-
+    // Full-width window below the status bar.
+    const ImGuiIO& io = ImGui::GetIO();
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse;
 
-    // Remove visible window border
-    style.WindowBorderSize = 0.0f;
-
+    ImGui::SetNextWindowPos(ImVec2(0, io.DisplaySize.y * 0.1f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y * 0.9f), ImGuiCond_Always);
     ImGui::Begin("Airgap", nullptr, flags);
 
-    // [SECTION_END] Window setup
-
-    // [SECTION_START] Title
-
-    ImGui::Text("Wallet");
-    ImGui::Spacing();
-
-    // [SECTION_END] Title
-
-    // [SECTION_START] Wallet content
-
-    if (gBackupStage != BackupStage::None) {
-        drawBackupScreen();
-
-    } else if (ImGui::BeginTabBar("wallet menus")) {
-        const auto selectFlags = gSelectWalletTab ?
-                                 ImGuiTabItemFlags_SetSelected : 0;
-        gSelectWalletTab = false;
-
-        if (ImGui::BeginTabItem("Select wallet", nullptr, selectFlags)) {
-            drawSelectWalletMenu();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Create wallet")) {
-            drawCreateWalletMenu();
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Call definitions")) {
-            drawCallDefinitionsMenu();
-            ImGui::EndTabItem();
-        }
-
-        ImGui::EndTabBar();
-    }
-
-    // [SECTION_END] Wallet content
-
-    // [SECTION_START] UI rendering
+    applyNavigation();
+    dragToScroll();
+    drawScreen();
 
     ImGui::End();
     ImGui::Render();
-
-    // [SECTION_END] UI rendering
-
-    // [SECTION_START] Keyboard visibility
-
-    const bool wantsKeyboard = io.WantTextInput;
-    if (wantsKeyboard && !gKeyboardRequested) {
-        gKeyboardRequested = showSoftKeyboard();
-    } else if (!wantsKeyboard && gKeyboardRequested) {
-        ANativeActivity_hideSoftInput(gApp->activity, 0);
-        gKeyboardRequested = false;
-    }
-
-    // [SECTION_END] Keyboard visibility
-
-    // [SECTION_START] Frame presentation
+    updateSoftKeyboard();
 
     glViewport(0, 0, static_cast<int>(io.DisplaySize.x), static_cast<int>(io.DisplaySize.y));
-
     glClearColor(0.02f, 0.02f, 0.02f, 1.0f);
-
     glClear(GL_COLOR_BUFFER_BIT);
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
     eglSwapBuffers(gDisplay, gSurface);
-
-    // [SECTION_END] Frame presentation
 }
 
 void handleCommand(android_app* app, int32_t command) {
     switch (command) {
-
     case APP_CMD_INIT_WINDOW:
         LOGI("APP_CMD_INIT_WINDOW");
-
         initGraphics(app);
         updateDisplayRotation();
         break;
@@ -1036,7 +1767,6 @@ void handleCommand(android_app* app, int32_t command) {
         const bool pending = gCameraPermissionPending;
         closeCamera();
         gCameraPermissionPending = pending;
-
         break;
     }
 
@@ -1051,7 +1781,6 @@ void handleCommand(android_app* app, int32_t command) {
 
     case APP_CMD_TERM_WINDOW:
         LOGI("APP_CMD_TERM_WINDOW");
-
         shutdownGraphics();
         break;
 
@@ -1063,42 +1792,8 @@ void handleCommand(android_app* app, int32_t command) {
 int32_t handleInput(android_app*, AInputEvent* event) {
     const int32_t handled = ImGui_ImplAndroid_HandleInputEvent(event);
     addTextInput(event);
+
     return handled;
-}
-
-void initialize(android_app* app) {
-    gApp = app;
-    ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_SECURE, 0);
-    gWalletStore = WalletStore::open(app->activity);
-    loadCallDefinitions();
-    gActiveAddress.reset();
-    clearRecoveryWords();
-
-    gCreateMessage.clear();
-    gSelectMessage.clear();
-    gSelectWalletTab = false;
-    gKeyboardRequested = false;
-
-    gCamera = Camera::init();
-    if (!gCamera)
-        gCameraMessage = "Camera manager unavailable";
-}
-
-void shutdown() {
-    closeCamera();
-    gScanResult.reset();
-    shutdownGraphics();
-    clearRecoveryWords();
-    gActiveAddress.reset();
-    gWalletStore.reset();
-
-    gCallDefinitions.reset();
-    gCallDraft.clear();
-    gCamera.reset();
-}
-
-bool isReady() {
-    return gInitialized;
 }
 
 } // namespace ui
