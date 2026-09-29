@@ -5,8 +5,10 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <vector>
 
 struct AAssetManager;
+class Transaction;
 
 class Wallet {
 public:
@@ -38,6 +40,12 @@ public:
     ~Wallet();
 
     bool sign(const Hash& hash, Signature& signature) const;
+
+    // Adds signature to transaction and returns the raw 0x02-prefixed bytes,
+    // ready to broadcast. Any signature the transaction already carries is
+    // replaced. Fails unless this wallet signed transaction.signingHash().
+    std::optional<std::vector<uint8_t>> encodeSigned(
+        const Transaction& transaction, const Signature& signature) const;
 
     const Address& address() const noexcept { return address_; }
     const PublicKey& publicKey() const noexcept { return publicKey_; }

@@ -61,6 +61,7 @@ add_library(airgap SHARED
     native/camera.cpp
     native/qr_scanner.cpp
     native/qr_scan_worker.cpp
+    native/qr_encoder.cpp
     native/crypto/abi.c
     native/crypto/eip_1559_tx.c
     native/crypto/eth_crypto.c
@@ -115,3 +116,9 @@ if(NOT TARGET quirc::quirc)
 endif()
 target_link_libraries(airgap PRIVATE quirc::quirc)
 # END vcpkg-install: quirc
+
+# libqrencode installs no CMake package, so locate its header and library directly.
+find_path(QRENCODE_INCLUDE_DIR NAMES qrencode.h REQUIRED)
+find_library(QRENCODE_LIBRARY NAMES qrencode REQUIRED)
+target_include_directories(airgap PRIVATE "${QRENCODE_INCLUDE_DIR}")
+target_link_libraries(airgap PRIVATE "${QRENCODE_LIBRARY}")

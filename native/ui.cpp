@@ -45,6 +45,7 @@
 #include "call_definitions_storage.hpp"
 #include "camera.hpp"
 #include "hex.hpp"
+#include "qr_encoder.hpp"
 #include "qr_scan_worker.hpp"
 
 #include "types.hpp"
@@ -108,6 +109,9 @@ constexpr float kUiScale = 3.5f;
 constexpr float kGlideFriction = 4.0f;
 constexpr float kMinGlide = 60.0f;
 
+// Light modules around a QR code, as the QR specification requires.
+constexpr int kQrQuietZone = 4;
+
 constexpr ImVec4 kPrimaryColors[] = {{0.16f, 0.45f, 0.86f, 1.0f},
                                      {0.22f, 0.52f, 0.93f, 1.0f},
                                      {0.12f, 0.38f, 0.76f, 1.0f}};
@@ -166,7 +170,7 @@ std::unique_ptr<WalletStore::Request> gSaveRequest;
 
 // Transactions
 std::optional<QrScanWorker::Result> gScanResult;
-std::optional<Wallet::Signature> gSignature;
+std::optional<QREncoder::Code> gSignedQr;
 std::unique_ptr<WalletStore::Request> gSignRequest;
 bool gReviewConfirmed = false;
 
@@ -640,6 +644,41 @@ void detailRow(std::string_view label, std::string_view value) {
     ImGui::PopTextWrapPos();
 }
 
+// Draws a black-on-white QR code centered at full width. Modules are whole
+// pixels so the grid stays sharp for the camera reading it.
+void drawQrCode(const QREncoder::Code& code) {
+    const int modules = code.size + 2 * kQrQuietZone;
+    const float available = ImGui::GetContentRegionAvail().x;
+    const float module = std::max(1.0f, std::floor(available / modules));
+    const float side = module * modules;
+
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (available - side) / 2));
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const ImVec2 origin(std::floor(cursor.x), std::floor(cursor.y));
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddRectFilled(origin, ImVec2(origin.x + side, origin.y + side), IM_COL32_WHITE);
+
+    const auto corner = [&](int x, int y) {
+        return ImVec2(origin.x + (kQrQuietZone + x) * module,
+                      origin.y + (kQrQuietZone + y) * module);
+    };
+
+    // One rectangle per horizontal run of dark modules.
+    for (int y = 0; y < code.size; ++y) {
+        for (int x = 0; x < code.size; ++x) {
+            const int start = x;
+            while (x < code.size && code.isDark(x, y))
+                ++x;
+
+            if (x > start)
+                drawList->AddRectFilled(corner(start, y), corner(x, y + 1), IM_COL32_BLACK);
+        }
+    }
+
+    ImGui::Dummy(ImVec2(side, side));
+}
+
 //-----------------------------------------------------------------------------
 // [SECTION] Camera, QR scanning
 //-----------------------------------------------------------------------------
@@ -993,7 +1032,7 @@ void drawBackupScreen() {
 void clearTransaction() {
     gSignRequest.reset();
     gScanResult.reset();
-    gSignature.reset();
+    gSignedQr.reset();
     gReviewConfirmed = false;
 }
 
@@ -1027,6 +1066,19 @@ void signScannedTransaction() {
     gSignRequest = gWalletStore->load(gActiveWallet->name, {title, "With wallet " + wallet});
 }
 
+// A transaction is shared fully signed; a blind hash only as r || s || y parity.
+std::optional<std::vector<uint8_t>> signedPayload(const Wallet& wallet,
+                                                  const Wallet::Signature& signature) {
+    if (gScanResult->transaction)
+        return wallet.encodeSigned(*gScanResult->transaction, signature);
+
+    std::vector<uint8_t> packed(signature.r.begin(), signature.r.end());
+    packed.insert(packed.end(), signature.s.begin(), signature.s.end());
+    packed.push_back(static_cast<uint8_t>(signature.recoveryId));
+
+    return packed;
+}
+
 void pollSignRequest() {
     if (!gSignRequest)
         return;
@@ -1046,12 +1098,20 @@ void pollSignRequest() {
     }
 
     Wallet::Signature signature;
-    if (!wallet->sign(gScanResult->hash, signature)) {
+    const auto payload = wallet->sign(gScanResult->hash, signature) ?
+                         signedPayload(*wallet, signature) : std::nullopt;
+
+    if (!payload) {
         gMessage = "Signing failed. Nothing was signed.";
         return;
     }
 
-    gSignature = signature;
+    gSignedQr = QREncoder::encode(*payload);
+    if (!gSignedQr) {
+        gMessage = "The signed transaction is too large for one QR code. Nothing was shared.";
+        return;
+    }
+
     openScreen(Screen::Signature);
 }
 
@@ -1241,38 +1301,22 @@ void drawReviewScreen() {
 void drawSignatureScreen() {
     drawHeader("Signature");
 
-    if (!gSignature || !gScanResult || !gActiveWallet) {
+    if (!gSignedQr || !gScanResult || !gActiveWallet) {
         ImGui::TextWrapped("No signature to show.");
         return;
     }
 
-    const auto& signature = *gSignature;
-    const auto yParity = static_cast<uint8_t>(signature.recoveryId);
-
-    std::array<uint8_t, 65> packed{};
-    std::copy(signature.r.begin(), signature.r.end(), packed.begin());
-    std::copy(signature.s.begin(), signature.s.end(), packed.begin() + 32);
-    packed[64] = yParity;
+    const bool blind = !gScanResult->transaction;
 
     sectionLabel("SIGNED BY");
     ImGui::TextWrapped("%s", gActiveWallet->name.c_str());
 
-    sectionLabel("SIGNATURE (r, s, y parity)");
-    ImGui::TextWrapped("%s", hexString(packed).c_str());
-
-    sectionLabel("COMPONENTS");
-
-    if (beginDetails("signature")) {
-        detailRow("r", hexString(signature.r));
-        detailRow("s", hexString(signature.s));
-        detailRow("y parity", std::to_string(yParity));
-        detailRow("Hash", hexString(gScanResult->hash));
-
-        ImGui::EndTable();
-    }
-
+    sectionLabel(blind ? "SIGNATURE (r, s, y parity)" : "SIGNED TRANSACTION");
+    drawQrCode(*gSignedQr);
     ImGui::Spacing();
-    hintText("Enter this signature on your online device to broadcast the transaction.");
+
+    hintText(blind ? "Scan this QR code with the device that produced the hash." :
+                     "Scan this QR code with your online device to broadcast the transaction.");
     ImGui::Spacing();
 
     if (button("DONE", ButtonStyle::Primary))

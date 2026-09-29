@@ -11,6 +11,7 @@
     },
     "openssl",
     "secp256k1",
-    "quirc"
+    "quirc",
+    "libqrencode"
   ]
 }
