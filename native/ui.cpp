@@ -162,9 +162,12 @@ Wallet::RecoveryWords gRecoveryWords{};
 BackupStage gBackupStage = BackupStage::FirstWarning;
 bool gBackupReviewed = false;
 
+std::unique_ptr<WalletStore::Request> gSaveRequest;
+
 // Transactions
 std::optional<QrScanWorker::Result> gScanResult;
 std::optional<Wallet::Signature> gSignature;
+std::unique_ptr<WalletStore::Request> gSignRequest;
 bool gReviewConfirmed = false;
 
 // Known calls
@@ -785,7 +788,10 @@ void drawCameraPreview() {
 // [SECTION] Wallets
 //-----------------------------------------------------------------------------
 
+// Forgets the wallet being created: its recovery words and any save still waiting.
 void clearRecoveryWords() {
+    gSaveRequest.reset();
+
     OPENSSL_cleanse(gRecoveryWords.data(), sizeof(gRecoveryWords));
     gPendingWallet.reset();
     gBackupStage = BackupStage::FirstWarning;
@@ -798,26 +804,37 @@ void createStoredWallet() {
 
     clearRecoveryWords();
 
-    {
-        auto wallet = Wallet::create(gApp->activity->assetManager, gRecoveryWords);
-        if (!wallet) {
-            gMessage = "Wallet generation failed. Check the word list.";
-            clearRecoveryWords();
-            return;
-        }
-
-        WalletStore::WalletInfo info{wallet->addressHexEncoded(), wallet->address()};
-        if (!gWalletStore->save(info.name, *wallet)) {
-            gMessage = "Wallet was not saved. TEE-backed Keystore or storage may be unavailable.";
-            clearRecoveryWords();
-            return;
-        }
-
-        gPendingWallet = std::move(info);
+    auto wallet = Wallet::create(gApp->activity->assetManager, gRecoveryWords);
+    if (!wallet) {
+        gMessage = "Wallet generation failed. Check the word list.";
+        clearRecoveryWords();
+        return;
     }
 
-    // The Wallet destructor above has already wiped the private key.
-    openScreen(Screen::Backup);
+    // Sealing the key needs the user's fingerprint or screen lock. The request
+    // now owns the key; moving it out wiped the local copy.
+    gPendingWallet = WalletStore::WalletInfo{wallet->addressHexEncoded(), wallet->address()};
+    gSaveRequest = gWalletStore->save(gPendingWallet->name, std::move(*wallet),
+                                      {"Protect new wallet", "Confirm with your fingerprint or screen lock"});
+}
+
+// The recovery words are only shown once the wallet is safely stored.
+void pollSaveRequest() {
+    if (!gSaveRequest)
+        return;
+
+    const auto status = gSaveRequest->poll();
+    if (status == WalletStore::Request::Status::Waiting)
+        return;
+
+    if (status == WalletStore::Request::Status::Done) {
+        gSaveRequest.reset();
+        openScreen(Screen::Backup);
+        return;
+    }
+
+    gMessage = "Wallet was not saved. " + gSaveRequest->error();
+    clearRecoveryWords();
 }
 
 void confirmBackup() {
@@ -827,16 +844,8 @@ void confirmBackup() {
     openScreen(Screen::Home, "Wallet created and set as the active wallet.");
 }
 
+// Selecting uses no key; each signature unlocks and verifies the wallet.
 void selectStoredWallet(const WalletStore::WalletInfo& info) {
-    if (!gWalletStore)
-        return;
-
-    // Unlocking once proves the Keystore key still decrypts this wallet.
-    if (!gWalletStore->load(info.name)) {
-        gMessage = "Could not verify or unlock this wallet.";
-        return;
-    }
-
     gActiveWallet = info;
     openScreen(Screen::Home, "Active wallet changed.");
 }
@@ -898,17 +907,24 @@ void drawCreateWalletScreen() {
         return;
     }
 
+    pollSaveRequest();
+
     sectionLabel("BEFORE YOU START");
     bulletText("A new private key is generated on this device and sealed by the "
                "TEE-backed Keystore.");
+    bulletText("Saving it and every signature need your fingerprint or screen lock.");
     bulletText("You will see 24 recovery words once. They are never saved.");
     bulletText("Have pen and paper ready. Anyone with the words controls the funds.");
 
     ImGui::Spacing();
     ImGui::Spacing();
+    ImGui::BeginDisabled(gSaveRequest != nullptr);
 
-    if (button("CREATE WALLET", ButtonStyle::Primary))
+    if (button(gSaveRequest ? "WAITING FOR AUTHENTICATION..." : "CREATE WALLET",
+               ButtonStyle::Primary))
         createStoredWallet();
+
+    ImGui::EndDisabled();
 }
 
 void drawRecoveryWords() {
@@ -975,6 +991,7 @@ void drawBackupScreen() {
 //-----------------------------------------------------------------------------
 
 void clearTransaction() {
+    gSignRequest.reset();
     gScanResult.reset();
     gSignature.reset();
     gReviewConfirmed = false;
@@ -997,14 +1014,34 @@ void startScan() {
     gMessage = "Camera permission required. Allow access in the prompt or app settings.";
 }
 
+// Every signature needs its own fingerprint or screen lock authentication;
+// no unlocked key is kept between transactions.
 void signScannedTransaction() {
-    if (!gWalletStore || !gScanResult || !gActiveWallet)
+    if (!gWalletStore || !gScanResult || !gActiveWallet || gSignRequest)
+        return;
+
+    const std::string& address = gActiveWallet->name;
+    const std::string wallet = address.substr(0, 8) + "..." + address.substr(address.size() - 6);
+    const char* title = gScanResult->transaction ? "Sign transaction" : "Sign hash";
+
+    gSignRequest = gWalletStore->load(gActiveWallet->name, {title, "With wallet " + wallet});
+}
+
+void pollSignRequest() {
+    if (!gSignRequest)
+        return;
+
+    const auto status = gSignRequest->poll();
+    if (status == WalletStore::Request::Status::Waiting)
         return;
 
     // The private key lives only inside this scope; ~Wallet wipes it.
-    auto wallet = gWalletStore->load(gActiveWallet->name);
+    auto wallet = gSignRequest->takeWallet();
+    const std::string error = gSignRequest->error();
+    gSignRequest.reset();
+
     if (!wallet || wallet->address() != gActiveWallet->address) {
-        gMessage = "Could not unlock the active wallet. Nothing was signed.";
+        gMessage = "Nothing was signed. " + (error.empty() ? "The wallet could not be unlocked." : error);
         return;
     }
 
@@ -1169,6 +1206,8 @@ void drawReviewScreen() {
         return;
     }
 
+    pollSignRequest();
+
     sectionLabel("SIGNING WALLET");
     ImGui::TextWrapped("%s", gActiveWallet->name.c_str());
 
@@ -1184,12 +1223,16 @@ void drawReviewScreen() {
     ImGui::Checkbox(blind ? "I trust where this hash came from" : "I checked every detail above",
                     &gReviewConfirmed);
 
-    ImGui::BeginDisabled(!gReviewConfirmed);
+    const char* signLabel = gSignRequest ? "WAITING FOR AUTHENTICATION..." :
+                            blind        ? "SIGN HASH" : "SIGN TRANSACTION";
 
-    if (button(blind ? "SIGN HASH" : "SIGN TRANSACTION", ButtonStyle::Primary))
+    ImGui::BeginDisabled(!gReviewConfirmed || gSignRequest);
+
+    if (button(signLabel, ButtonStyle::Primary))
         signScannedTransaction();
 
     ImGui::EndDisabled();
+    hintText("Signing asks for your fingerprint or screen lock every time.");
 
     if (button("REJECT", ButtonStyle::Danger))
         openScreen(Screen::Home, "Transaction rejected. Nothing was signed.");

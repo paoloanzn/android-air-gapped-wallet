@@ -14,6 +14,17 @@ cmake --build "$ROOT/build" || exit 1
 
 APK_OUT="$ROOT/build/airgap-base.apk"
 
+# Java glue for the system authentication prompt (see native/wallet_store.cpp)
+JAVA_OUT="$ROOT/build/java"
+rm -rf "$JAVA_OUT"
+mkdir -p "$JAVA_OUT/classes" "$ROOT/build/apk"
+
+javac --release 17 -classpath "$ANDROID_JAR" -d "$JAVA_OUT/classes" \
+    $(find "$ROOT/app/java" -name '*.java') || exit 1
+
+"$BUILD_TOOLS/d8" --release --min-api 26 --lib "$ANDROID_JAR" \
+    --output "$ROOT/build/apk" $(find "$JAVA_OUT/classes" -name '*.class') || exit 1
+
 "$BUILD_TOOLS/aapt2" link \
     -I "$ANDROID_JAR" \
     --manifest "$ROOT/app/AndroidManifest.xml" \
@@ -36,6 +47,7 @@ cp "$ROOT/build/airgap-base.apk" "$ROOT/build/airgap-unaligned.apk"
 cd "$ROOT/build/apk"
 
 zip -0 ../airgap-unaligned.apk \
+    classes.dex \
     lib/arm64-v8a/libairgap.so \
     assets/bip39_english.csv \
     assets/calls.txt
