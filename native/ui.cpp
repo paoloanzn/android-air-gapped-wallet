@@ -827,9 +827,19 @@ void drawCameraPreview() {
 // [SECTION] Wallets
 //-----------------------------------------------------------------------------
 
+// Blocks screenshots, screen recording and the recents thumbnail while secrets exist.
+void setWindowSecure(bool secure) {
+    if (secure)
+        ANativeActivity_setWindowFlags(gApp->activity, AWINDOW_FLAG_SECURE, 0);
+    else
+        ANativeActivity_setWindowFlags(gApp->activity, 0, AWINDOW_FLAG_SECURE);
+}
+
 // Forgets the wallet being created: its recovery words and any save still waiting.
 void clearRecoveryWords() {
     gSaveRequest.reset();
+    // We want to take some screenshot.
+    setWindowSecure(false);
 
     OPENSSL_cleanse(gRecoveryWords.data(), sizeof(gRecoveryWords));
     gPendingWallet.reset();
@@ -849,6 +859,9 @@ void createStoredWallet() {
         clearRecoveryWords();
         return;
     }
+
+    // The words now exist; secure the window long before the backup screen shows them.
+    setWindowSecure(true);
 
     // Sealing the key needs the user's fingerprint or screen lock. The request
     // now owns the key; moving it out wiped the local copy.
@@ -1832,7 +1845,6 @@ void shutdownGraphics() {
 
 void initialize(android_app* app) {
     gApp = app;
-    ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_SECURE, 0);
     gWalletStore = WalletStore::open(app->activity);
     gActiveWallet.reset();
     clearRecoveryWords();
