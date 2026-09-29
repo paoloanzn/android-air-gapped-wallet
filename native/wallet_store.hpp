@@ -1,5 +1,6 @@
 #pragma once
 
+#include "types.hpp"
 #include "wallet.hpp"
 
 #include <array>
@@ -19,7 +20,7 @@ struct ANativeActivity;
 struct StoredKey {
     std::string name;
     std::array<uint8_t, 60> encryptedKey{};
-    Wallet::Address address{};
+    eth::Address address{};
 };
 
 struct Envelope {
@@ -30,7 +31,7 @@ class WalletStore {
 public:
     struct WalletInfo {
         std::string name;
-        Wallet::Address address{};
+        eth::Address address{};
     };
 
     // An absent file opens as an empty store; a malformed file fails closed.

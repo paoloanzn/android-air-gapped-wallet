@@ -1,7 +1,8 @@
 #pragma once
 
+#include "types.hpp"
+
 #include <array>
-#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -9,10 +10,10 @@ struct AAssetManager;
 
 class Wallet {
 public:
-    using Hash = std::array<uint8_t, 32>;
-    using PrivateKey = std::array<uint8_t, 32>;
-    using PublicKey = std::array<uint8_t, 64>;
-    using Address = std::array<uint8_t, 20>;
+    using Hash = eth::Hash;
+    using PrivateKey = eth::PrivateKey;
+    using PublicKey = eth::PublicKey;
+    using Address = eth::Address;
     using RecoveryWords = std::array<std::array<char, 16>, 24>;
 
     struct Signature {

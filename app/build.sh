@@ -28,6 +28,8 @@ cp "$ROOT/build/libairgap.so" \
    "$ROOT/build/apk/lib/arm64-v8a/libairgap.so"
 cp "$ROOT/app/assets/bip39_english.csv" \
    "$ROOT/build/apk/assets/bip39_english.csv"
+cp "$ROOT/app/assets/calls.txt" \
+   "$ROOT/build/apk/assets/calls.txt"
 
 cp "$ROOT/build/airgap-base.apk" "$ROOT/build/airgap-unaligned.apk"
 
@@ -35,7 +37,8 @@ cd "$ROOT/build/apk"
 
 zip -0 ../airgap-unaligned.apk \
     lib/arm64-v8a/libairgap.so \
-    assets/bip39_english.csv
+    assets/bip39_english.csv \
+    assets/calls.txt
 
 cd "$ROOT"
 

@@ -365,7 +365,7 @@ jobject newCipher(JniScope& jni) {
         "(Ljava/lang/String;)Ljavax/crypto/Cipher;", transformation);
 }
 
-bool encryptKey(ANativeActivity* activity, const Wallet::PrivateKey& key,
+bool encryptKey(ANativeActivity* activity, const eth::PrivateKey& key,
                 StoredKey& entry, bool mayCreateKey) {
     JniScope jni(activity);
     auto secret = secretKey(jni, mayCreateKey);
@@ -398,7 +398,7 @@ bool encryptKey(ANativeActivity* activity, const Wallet::PrivateKey& key,
 }
 
 bool decryptKey(ANativeActivity* activity, const StoredKey& entry,
-                Wallet::PrivateKey& output) {
+                eth::PrivateKey& output) {
     JniScope jni(activity);
     auto secret = secretKey(jni, false);
     auto cipher = newCipher(jni);
@@ -709,7 +709,7 @@ std::optional<Wallet> WalletStore::load(std::string_view name) const {
     if (found == envelope_.keys.end())
         return std::nullopt;
 
-    Wallet::PrivateKey privateKey{};
+    eth::PrivateKey privateKey{};
     if (!decryptKey(activity_, *found, privateKey)) {
         OPENSSL_cleanse(privateKey.data(), privateKey.size());
         return std::nullopt;

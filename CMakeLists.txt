@@ -51,7 +51,10 @@ set(glue "${CMAKE_ANDROID_NDK}/sources/android/native_app_glue")
 add_library(airgap SHARED
     native/main.cpp
     native/bip39_words.cpp
+    native/call_definitions.cpp
+    native/call_definitions_storage.cpp
     native/hex.cpp
+    native/tx.cpp
     native/wallet.cpp
     native/wallet_store.cpp
     native/ui.cpp

@@ -3,10 +3,15 @@
 #include <stdint.h>
 #include <string.h>
 
-void compute_selector(const char *func_signature, uint8_t out[4])
+int compute_selector(const char *func_signature, uint8_t out[4])
 {
-    int len = strlen(func_signature);
+    if (func_signature == NULL || out == NULL)
+        return 0;
+
     uint8_t hash_buf[32];
-    eth_keccak256(func_signature, len, hash_buf);
+    if (!eth_keccak256(func_signature, strlen(func_signature), hash_buf))
+        return 0;
+
     memcpy(out, hash_buf, 4);
+    return 1;
 }

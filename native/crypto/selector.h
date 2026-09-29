@@ -7,7 +7,8 @@
 extern "C" {
 #endif
 
-void compute_selector(const char* func_signature, uint8_t out[4]);
+// Returns 1 on success. On failure, out is left unchanged.
+int compute_selector(const char* func_signature, uint8_t out[4]);
 
 #ifdef __cplusplus
 }

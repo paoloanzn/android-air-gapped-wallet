@@ -1,0 +1,6 @@
+# Edit these function declarations in the app's Call definitions tab.
+# Supported types: address, uint, uint8..uint256, and their [] arrays.
+function transfer(address to, uint256 value)
+function approve(address spender, uint256 amount)
+function transferFrom(address from, address to, uint256 value)
+function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline)

@@ -24,6 +24,7 @@
 
         <activity
             android:name="android.app.NativeActivity"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
 
             <meta-data

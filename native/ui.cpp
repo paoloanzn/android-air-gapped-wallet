@@ -11,13 +11,18 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "camera.hpp"
+#include "call_definitions.hpp"
+#include "call_definitions_storage.hpp"
 #include "hex.hpp"
 #include "wallet.hpp"
 #include "wallet_store.hpp"
+#include "types.hpp"
 
 #include "imgui.h"
+#include "imgui_stdlib.h"
 #include "imgui_impl_android.h"
 #include "imgui_impl_opengl3.h"
 
@@ -43,12 +48,16 @@ bool gCameraPermissionPending = false;
 std::string gCameraMessage;
 
 std::optional<WalletStore> gWalletStore;
-std::optional<Wallet::Address> gActiveAddress;
-std::optional<Wallet::Address> gPendingAddress;
+std::optional<eth::Address> gActiveAddress;
+std::optional<eth::Address> gPendingAddress;
 Wallet::RecoveryWords gRecoveryWords{};
 std::string gPendingAddressHex;
 std::string gCreateMessage;
 std::string gSelectMessage;
+std::optional<CallDefinitions> gCallDefinitions;
+std::string gCallDraft;
+std::string gCallMessage;
+bool gKeyboardVisible = false;
 
 enum class BackupStage { None, FirstWarning, FinalWarning };
 BackupStage gBackupStage = BackupStage::None;
@@ -175,6 +184,36 @@ void updateDisplayRotation() {
         gDisplayRotation = rotation * 90;
 }
 
+void addTextInput(AInputEvent* event) {
+    if (!gInitialized || AInputEvent_getType(event) != AINPUT_EVENT_TYPE_KEY ||
+        AKeyEvent_getAction(event) != AKEY_EVENT_ACTION_DOWN)
+        return;
+
+    ActivityJni jni(gApp->activity);
+    if (!jni.localFrame)
+        return;
+
+    JNIEnv* env = jni.env;
+    jclass type = env->FindClass("android/view/KeyEvent");
+    if (!type)
+        return;
+
+    jmethodID constructor = env->GetMethodID(type, "<init>", "(II)V");
+    jmethodID getUnicode = env->GetMethodID(type, "getUnicodeChar", "(I)I");
+    if (!constructor || !getUnicode)
+        return;
+
+    jobject key = env->NewObject(type, constructor, AKEY_EVENT_ACTION_DOWN,
+                                  AKeyEvent_getKeyCode(event));
+    if (!key || env->ExceptionCheck())
+        return;
+
+    const jint codepoint = env->CallIntMethod(
+        key, getUnicode, AKeyEvent_getMetaState(event));
+    if (!env->ExceptionCheck() && codepoint >= 32)
+        ImGui::GetIO().AddInputCharacter(static_cast<unsigned int>(codepoint));
+}
+
 void closeCamera() {
     gCameraPermissionPending = false;
 
@@ -188,7 +227,7 @@ void closeCamera() {
     gPreviewWidth = gPreviewHeight = 0;
 }
 
-std::string addressHex(const Wallet::Address& address) {
+std::string addressHex(const eth::Address& address) {
     std::array<char, 43> text{};
     hex_encode(address.data(), address.size(), text.data());
     return text.data();
@@ -476,6 +515,122 @@ void drawCreateWalletMenu() {
         ImGui::TextWrapped("%s", gCreateMessage.c_str());
 }
 
+void loadCallDefinitions() {
+    gCallDefinitions.reset();
+    gCallDraft.clear();
+    gCallMessage.clear();
+
+    std::string error;
+    auto packaged = call_storage::packaged(gApp->activity->assetManager, error);
+
+    if (packaged) {
+        auto parsed = CallDefinitions::parse(*packaged, error);
+        if (parsed) {
+            gCallDefinitions = std::move(parsed);
+            gCallDraft = *packaged;
+        }
+    }
+
+    if (!error.empty())
+        gCallMessage = "Packaged definitions: " + error;
+
+    auto saved = call_storage::overrideText(
+        gApp->activity->internalDataPath, error);
+    if (!error.empty())
+        gCallMessage = "Saved definitions: " + error;
+
+    if (!saved)
+        return;
+
+    gCallDraft = *saved;
+    auto parsed = CallDefinitions::parse(*saved, error);
+    if (!parsed) {
+        gCallMessage = "Saved definitions: " + error;
+        if (gCallDefinitions)
+            gCallMessage += ". Packaged definitions remain active.";
+
+        return;
+    }
+
+    gCallDefinitions = std::move(parsed);
+    gCallMessage = "Saved definitions loaded.";
+}
+
+void saveCallDefinitions() {
+    std::string error;
+    auto parsed = CallDefinitions::parse(gCallDraft, error);
+    if (!parsed) {
+        gCallMessage = error;
+        return;
+    }
+
+    if (!call_storage::save(gApp->activity->internalDataPath,
+                            gCallDraft, error)) {
+        gCallMessage = error;
+        return;
+    }
+
+    gCallDefinitions = std::move(parsed);
+    gCallMessage = "Saved " + std::to_string(gCallDefinitions->size()) +
+                   " call definitions.";
+}
+
+void restoreCallDefinitions() {
+    std::string error;
+    auto packaged = call_storage::packaged(gApp->activity->assetManager, error);
+    if (!packaged) {
+        gCallMessage = error;
+        return;
+    }
+
+    auto parsed = CallDefinitions::parse(*packaged, error);
+    if (!parsed || !call_storage::reset(
+            gApp->activity->internalDataPath, error)) {
+        gCallMessage = error;
+        return;
+    }
+
+    gCallDefinitions = std::move(parsed);
+    gCallDraft = *packaged;
+    gCallMessage = "Packaged definitions restored.";
+}
+
+void drawCallDefinitionsMenu() {
+    ImGui::TextWrapped(
+        "The APK provides calls.txt. SAVE keeps a private editable copy. "
+        "Write one function per line. Supported types: address, "
+        "uint, uint8..uint256, and their [] arrays. Values are shown in "
+        "base units; selector matches do not verify contract behavior.");
+
+    if (gCallDefinitions)
+        ImGui::Text("Active definitions: %zu", gCallDefinitions->size());
+    else
+        ImGui::TextUnformatted("No valid definitions are active.");
+
+    const float height = std::max(250.0f,
+                                  ImGui::GetContentRegionAvail().y - 210.0f);
+    ImGui::InputTextMultiline("##calls", &gCallDraft,
+                              ImVec2(-1, height),
+                              ImGuiInputTextFlags_WordWrap);
+
+    if (ImGui::Button("VALIDATE")) {
+        std::string error;
+        auto parsed = CallDefinitions::parse(gCallDraft, error);
+        gCallMessage = parsed ?
+            "Valid: " + std::to_string(parsed->size()) + " functions." : error;
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("SAVE"))
+        saveCallDefinitions();
+
+    if (ImGui::Button("RESTORE PACKAGED DEFAULTS"))
+        restoreCallDefinitions();
+
+    if (!gCallMessage.empty())
+        ImGui::TextWrapped("%s", gCallMessage.c_str());
+}
+
 bool initGraphics(android_app* app) {
     if (gInitialized)
         return true;
@@ -590,6 +745,10 @@ void shutdownGraphics() {
     if (!gInitialized)
         return;
 
+    if (gKeyboardVisible)
+        ANativeActivity_hideSoftInput(gApp->activity, 0);
+    gKeyboardVisible = false;
+
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplAndroid_Shutdown();
 
@@ -666,6 +825,11 @@ void drawFrame() {
             ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem("Call definitions")) {
+            drawCallDefinitionsMenu();
+            ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
     }
 
@@ -676,6 +840,16 @@ void drawFrame() {
     //
 
     ImGui::Render();
+
+    const bool wantsKeyboard = io.WantTextInput;
+    if (wantsKeyboard != gKeyboardVisible) {
+        if (wantsKeyboard)
+            ANativeActivity_showSoftInput(gApp->activity, 0);
+        else
+            ANativeActivity_hideSoftInput(gApp->activity, 0);
+
+        gKeyboardVisible = wantsKeyboard;
+    }
 
     glViewport(0, 0, static_cast<int>(io.DisplaySize.x), static_cast<int>(io.DisplaySize.y));
 
@@ -738,19 +912,23 @@ void handleCommand(android_app* app, int32_t command) {
 }
 
 int32_t handleInput(android_app*, AInputEvent* event) {
-    return ImGui_ImplAndroid_HandleInputEvent(event);
+    const int32_t handled = ImGui_ImplAndroid_HandleInputEvent(event);
+    addTextInput(event);
+    return handled;
 }
 
 void initialize(android_app* app) {
     gApp = app;
     ANativeActivity_setWindowFlags(app->activity, AWINDOW_FLAG_SECURE, 0);
     gWalletStore = WalletStore::open(app->activity);
+    loadCallDefinitions();
     gActiveAddress.reset();
     clearRecoveryWords();
 
     gCreateMessage.clear();
     gSelectMessage.clear();
     gSelectWalletTab = false;
+    gKeyboardVisible = false;
 
     gCamera = Camera::init();
     if (!gCamera)
@@ -762,6 +940,9 @@ void shutdown() {
     clearRecoveryWords();
     gActiveAddress.reset();
     gWalletStore.reset();
+
+    gCallDefinitions.reset();
+    gCallDraft.clear();
     gCamera.reset();
 }
 
