@@ -11,7 +11,7 @@
 // [SECTION] Wallets
 // [SECTION] Transactions
 // [SECTION] Known calls
-// [SECTION] Home screen, navigation
+// [SECTION] Main window
 // [SECTION] Graphics lifecycle
 // [SECTION] Public API
 
@@ -29,6 +29,7 @@
 #include <openssl/crypto.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <memory>
@@ -51,6 +52,7 @@
 #include "wallet_store.hpp"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_stdlib.h"
 #include "imgui_impl_android.h"
 #include "imgui_impl_opengl3.h"
@@ -102,6 +104,10 @@ constexpr float kButtonHeight = 140.0f;
 constexpr float kRowButtonHeight = 100.0f;
 constexpr float kUiScale = 3.5f;
 
+// Touch scrolling: glide slows by this factor per second and stops below kMinGlide px/s.
+constexpr float kGlideFriction = 4.0f;
+constexpr float kMinGlide = 60.0f;
+
 constexpr ImVec4 kPrimaryColors[] = {{0.16f, 0.45f, 0.86f, 1.0f},
                                      {0.22f, 0.52f, 0.93f, 1.0f},
                                      {0.12f, 0.38f, 0.76f, 1.0f}};
@@ -133,6 +139,12 @@ std::optional<Screen> gNextScreen;
 std::string gNextMessage;
 std::string gMessage;
 ImGuiID gArmedButton = 0;
+
+// Touch scrolling; velocity is in scroll pixels per second and non-zero while gliding.
+bool gTouchScrolling = false;
+float gScrollStartY = 0.0f;
+float gLastDragY = 0.0f;
+float gScrollVelocity = 0.0f;
 
 // Camera, QR scanning
 std::optional<Camera> gCamera;
@@ -1432,7 +1444,7 @@ void drawKnownCallsScreen() {
 }
 
 //-----------------------------------------------------------------------------
-// [SECTION] Home screen, navigation
+// [SECTION] Main window
 //-----------------------------------------------------------------------------
 
 void drawHomeScreen() {
@@ -1518,19 +1530,71 @@ void applyNavigation() {
     gNextMessage.clear();
     gArmedButton = 0;
 
+    // Show the new screen from the top, even while a finger is still dragging.
     ImGui::SetScrollY(0.0f);
+    gScrollVelocity = 0.0f;
+    gScrollStartY = gLastDragY;
 
     if (screen == Screen::Scan)
         startScan();
 }
 
-// Touch screens have no scroll wheel: dragging empty space scrolls the window.
-void dragToScroll() {
-    if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) || ImGui::IsAnyItemActive())
+// Keeps the page gliding after a fling, slowing until it stops or reaches an edge.
+void glideScroll(float deltaTime) {
+    if (gScrollVelocity == 0.0f)
         return;
 
-    if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
-        ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);
+    const float scroll = ImGui::GetScrollY() + gScrollVelocity * deltaTime;
+    ImGui::SetScrollY(scroll);
+    gScrollVelocity *= std::exp(-kGlideFriction * deltaTime);
+
+    const bool atEdge = scroll <= 0.0f || scroll >= ImGui::GetScrollMaxY();
+    if (atEdge || std::abs(gScrollVelocity) < kMinGlide)
+        gScrollVelocity = 0.0f;
+}
+
+// Touch screens have no scroll wheel: a drag anywhere scrolls the main window.
+// Once a touch scrolls, the widget under the finger is cancelled so releasing
+// does not click it. A touch on a gliding page only stops the glide.
+void updateTouchScroll() {
+    const ImGuiIO& io = ImGui::GetIO();
+    const float deltaTime = std::max(io.DeltaTime, 0.001f);
+
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        gTouchScrolling = gScrollVelocity != 0.0f;
+        gScrollVelocity = 0.0f;
+        gScrollStartY = ImGui::GetScrollY();
+        gLastDragY = 0.0f;
+    }
+
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        // A quick tap that stopped a glide was activated and released in two frames.
+        if (gTouchScrolling)
+            ImGui::ClearActiveID();
+
+        gTouchScrolling = false;
+        glideScroll(deltaTime);
+        return;
+    }
+
+    const float slop = io.MouseDragThreshold * kUiScale;
+    gTouchScrolling |= ImGui::IsMouseDragging(ImGuiMouseButton_Left, slop);
+
+    if (!gTouchScrolling)
+        return;
+
+    ImGui::ClearActiveID();
+
+    // Follow the finger; rebasing at the edges avoids a dead zone when reversing.
+    const float dragY = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f).y;
+    const float moved = dragY - std::exchange(gLastDragY, dragY);
+    const float scroll = std::clamp(gScrollStartY - dragY, 0.0f, ImGui::GetScrollMaxY());
+
+    gScrollStartY = scroll + dragY;
+    ImGui::SetScrollY(scroll);
+
+    // Smooth the finger speed so a fling keeps its momentum after release.
+    gScrollVelocity += (-moved / deltaTime - gScrollVelocity) * 0.4f;
 }
 
 //-----------------------------------------------------------------------------
@@ -1726,14 +1790,15 @@ void drawFrame() {
     // Full-width window below the status bar.
     const ImGuiIO& io = ImGui::GetIO();
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse;
+                                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoScrollbar;
 
     ImGui::SetNextWindowPos(ImVec2(0, io.DisplaySize.y * 0.1f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y * 0.9f), ImGuiCond_Always);
     ImGui::Begin("Airgap", nullptr, flags);
 
     applyNavigation();
-    dragToScroll();
+    updateTouchScroll();
     drawScreen();
 
     ImGui::End();
