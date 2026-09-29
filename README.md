@@ -46,9 +46,10 @@ it up in case the device is compromised, broken, lost or whatever. You can make 
 you want and select the active one.
 
 > [!IMPORTANT]
-> Write the mnemonic on paper if you want to save them and not on another device, otherwise the
-> whole point of a cold wallet is gone, because it would like duplicating the key on an hot device.
-> I would advise you to even considering using this app if you didn't figure this out yourself. 
+> Write the mnemonic on paper if you want to save them, and **not** on another device, otherwise the
+> whole point of a cold wallet is gone, because it would be like duplicating the key on an hot
+> device. I would advise you to even considering using this app if you didn't figure this
+> out yourself. 
 
 
 <table>
